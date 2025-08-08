@@ -16,72 +16,139 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 
 @bot.command()
+@commands.has_role("Membre de la Meute")
 async def update(ctx):
     guild = ctx.guild
     evenements_channel = discord.utils.get(guild.text_channels, name="evenements")
-
     if evenements_channel is None:
-        await ctx.send("❌ Impossible de trouver le salon 'evenements'.")
+        await ctx.send(
+            "❌ Salon `evenements` introuvable. Créez d'abord un salon `evenements`."
+        )
         return
 
-    # Parcourt tous les salons de gestion
-    for gestion_channel in [
-        c for c in guild.text_channels if c.name.startswith("gestion-")
-    ]:
-        group_slug = gestion_channel.name.replace("gestion-", "", 1)
-        role = discord.utils.get(
-            guild.roles, name=f"Groupe {group_slug.replace('-', ' ').title()}"
-        )
+    checked = 0
+    posted = 0
+    deleted = 0
 
-        if role is None:
+    # Parcours tous les salons de type "gestion-<slug>"
+    gestion_channels = [c for c in guild.text_channels if c.name.startswith("gestion-")]
+    for gestion in gestion_channels:
+        group_slug = gestion.name[len("gestion-") :]  # ex: "les-loups"
+        expected_role_slug = f"groupe-{group_slug}".lower()
+
+        # Recherche du rôle correspondant en normalisant (minuscules + espaces -> '-')
+        target_role = None
+        for r in guild.roles:
+            normalized = r.name.lower().replace(" ", "-")
+            if normalized == expected_role_slug:
+                target_role = r
+                break
+        if target_role is None:
+            # Aucun rôle trouvé pour ce slug, on passe
             continue
 
-        # Nombre de membres dans le groupe
-        members_in_group = [m for m in guild.members if role in m.roles]
+        # Liste des membres du groupe
+        members_in_group = [m for m in guild.members if target_role in m.roles]
         member_count = len(members_in_group)
-
         if member_count == 0:
             continue
 
-        # Analyse des messages dans le salon gestion
-        async for message in gestion_channel.history(limit=50):
-            # Ignore les messages sans réactions
-            if not message.reactions:
-                continue
+        # Analyse des messages récents dans le salon de gestion
+        try:
+            async for message in gestion.history(limit=200):
+                # On ne traite que les messages postés par le bot (propositions)
+                if message.author != bot.user:
+                    continue
 
-            # Récupère le nombre de ✅ et ❌
-            yes_reaction = discord.utils.get(message.reactions, emoji="✅")
-            no_reaction = discord.utils.get(message.reactions, emoji="❌")
+                # Ignore s'il n'y a pas de réactions
+                if not message.reactions:
+                    continue
 
-            yes_count = (
-                yes_reaction.count - 1 if yes_reaction else 0
-            )  # -1 pour enlever le bot
-            no_count = no_reaction.count - 1 if no_reaction else 0
+                # Récupération des réactions ✅ et ❌ (si présentes)
+                yes_reaction = discord.utils.get(message.reactions, emoji="✅")
+                no_reaction = discord.utils.get(message.reactions, emoji="❌")
 
-            # Si majorité pour → envoi dans evenements
-            if yes_count >= (member_count / 2):
-                # Vérifie que ce n'est pas déjà dans evenements
-                already_posted = False
-                async for evt_msg in evenements_channel.history(limit=100):
-                    if (
-                        message.embeds
-                        and evt_msg.embeds
-                        and evt_msg.embeds[0].description
-                        == message.embeds[0].description
-                    ):
-                        already_posted = True
-                        break
+                # Si aucune des deux, on ignore
+                if not yes_reaction and not no_reaction:
+                    continue
 
-                if not already_posted:
-                    new_msg = await evenements_channel.send(embed=message.embeds[0])
-                    await new_msg.add_reaction("✅")
-                    await new_msg.add_reaction("❌")
+                # Compter les votes uniquement parmi les membres du groupe (et non-bots)
+                yes_votes = 0
+                no_votes = 0
 
-            # Si majorité contre → supprime le message
-            elif no_count > (member_count / 2):
-                await message.delete()
+                if yes_reaction:
+                    async for u in yes_reaction.users():
+                        if u.bot:
+                            continue
+                        if target_role in u.roles:
+                            yes_votes += 1
 
-    await ctx.send("✅ Mise à jour terminée.")
+                if no_reaction:
+                    async for u in no_reaction.users():
+                        if u.bot:
+                            continue
+                        if target_role in u.roles:
+                            no_votes += 1
+
+                # Vérifications selon ta règle : approve si yes >= member_count/2, reject si no > member_count/2
+                if yes_votes >= (member_count / 2):
+                    # Récupère le texte de la proposition (embed ou contenu)
+                    if message.embeds:
+                        description = message.embeds[0].description or message.content
+                    else:
+                        description = message.content or ""
+
+                    # Détermine le nom d'affichage du groupe (préférer le nom du rôle si possible)
+                    if target_role.name.lower().startswith("groupe "):
+                        display_group_name = target_role.name[len("groupe ") :]
+                    else:
+                        display_group_name = target_role.name
+
+                    # Poste dans evenements (avec embed propre)
+                    embed = discord.Embed(
+                        title=f"Nouvel événement validé pour le groupe {display_group_name}",
+                        description=description,
+                        color=discord.Color.green(),
+                    )
+                    try:
+                        new_msg = await evenements_channel.send(embed=embed)
+                        await new_msg.add_reaction("✅")
+                        await new_msg.add_reaction("❌")
+                    except discord.Forbidden:
+                        await ctx.send(
+                            f"⚠️ Je n'ai pas la permission d'envoyer des messages dans #{evenements_channel.name}."
+                        )
+                        # On ne supprime pas le message si on ne peut pas poster
+                        continue
+                    # Supprime le message d'origine dans gestion
+                    try:
+                        await message.delete()
+                    except discord.Forbidden:
+                        await ctx.send(
+                            f"⚠️ Je n'ai pas la permission de supprimer un message dans {gestion.mention}."
+                        )
+                    posted += 1
+                    checked += 1
+
+                elif no_votes > (member_count / 2):
+                    # Supprime la proposition rejetée
+                    try:
+                        await message.delete()
+                    except discord.Forbidden:
+                        await ctx.send(
+                            f"⚠️ Je n'ai pas la permission de supprimer un message dans {gestion.mention}."
+                        )
+                    deleted += 1
+                    checked += 1
+
+        except Exception as e:
+            # Pour éviter que toute la commande plante sur une erreur inattendue
+            print(f"Erreur pendant l'analyse du salon {gestion.name}: {e}")
+            continue
+
+    await ctx.send(
+        f"✅ Update terminé — {checked} messages vérifiés, {posted} postés, {deleted} supprimés."
+    )
 
 
 @bot.command()
