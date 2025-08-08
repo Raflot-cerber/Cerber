@@ -73,12 +73,30 @@ async def update(ctx):
 @bot.command()
 @commands.check(lambda ctx: ctx.channel.name.startswith("groupe "))
 async def event(ctx, *, message_propose: str):
+    member = ctx.author
     guild = ctx.guild
-    nom_groupe = ctx.channel.name[len("groupe ") :]
+    channel = ctx.channel
+
+    # Récupère le nom du groupe à partir du channel, ex : "groupe Loups" -> "Loups"
+    nom_groupe = channel.name[len("groupe ") :]
+
+    # Trouve le rôle correspondant au groupe
+    role_groupe = discord.utils.get(guild.roles, name=f"groupe {nom_groupe}").lower()
+    if role_groupe is None:
+        await ctx.send("Erreur : groupe introuvable.")
+        return
+
+    # Vérifie que l'auteur a bien le rôle du groupe
+    if role_groupe not in member.roles:
+        await ctx.send(
+            "Tu ne fais pas partie de ce groupe, tu ne peux pas proposer d'événement ici."
+        )
+        return
+
+    # Trouve le salon "Gestion ---" correspondant
     gestion_channel = discord.utils.get(
         guild.text_channels, name=f"Gestion {nom_groupe}"
-    )
-
+    ).lower()
     if gestion_channel is None:
         await ctx.send("Salon de gestion introuvable.")
         return
