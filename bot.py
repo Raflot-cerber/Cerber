@@ -29,11 +29,11 @@ async def update(ctx):
     count_deleted = 0
 
     for gestion_channel in guild.text_channels:
-        if not gestion_channel.name.startswith("Gestion "):
+        if not gestion_channel.name.startswith("gestion-"):
             continue
 
-        nom_groupe = gestion_channel.name[len("Gestion ") :]
-        role_groupe = discord.utils.get(guild.roles, name=f"groupe {nom_groupe}")
+        nom_groupe = gestion_channel.name[len("gestion-") :]
+        role_groupe = discord.utils.get(guild.roles, name=f"groupe-{nom_groupe}")
         if role_groupe is None:
             continue
 
