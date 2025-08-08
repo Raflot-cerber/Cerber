@@ -72,24 +72,25 @@ async def update(ctx):
 
 @bot.command()
 async def event(ctx, *, message: str):
-    # Vérifie juste si on est bien dans un salon texte "groupe ..."
-    if not ctx.channel.name.startswith("groupe "):
+    # Vérifie si on est dans un salon texte commençant par "groupe-"
+    if not ctx.channel.name.startswith("groupe-"):
         await ctx.send("❌ Cette commande doit être utilisée dans un salon de groupe.")
         return
 
     guild = ctx.guild
-    group_name = ctx.channel.name.replace("groupe ", "")
+    # Récupère le nom de base du groupe (après "groupe-")
+    group_slug = ctx.channel.name.replace("groupe-", "", 1)
 
-    # Recherche du salon "gestion ..." correspondant (insensible à la casse)
+    # Cherche le salon gestion correspondant
     gestion_channel = discord.utils.get(
-        guild.text_channels, name=f"gestion {group_name}".lower()
+        guild.text_channels, name=f"gestion-{group_slug}".lower()
     )
 
     if gestion_channel is None:
         await ctx.send("❌ Impossible de trouver le salon de gestion du groupe.")
         return
 
-    # Envoi du message formaté dans "gestion ..."
+    # Envoie le message formaté dans "gestion-..."
     embed = discord.Embed(
         title="📢 Un nouvel événement a été proposé !",
         description=f"« {message} »\n\n"
@@ -100,7 +101,7 @@ async def event(ctx, *, message: str):
     )
     event_message = await gestion_channel.send(embed=embed)
 
-    # Ajout des réactions de vote
+    # Ajoute les réactions pour voter
     await event_message.add_reaction("✅")
     await event_message.add_reaction("❌")
 
