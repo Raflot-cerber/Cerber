@@ -15,6 +15,86 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
+@bot.command()
+@commands.has_role("Membre de la Meute")
+async def update(ctx):
+    guild = ctx.guild
+    evenements_channel = discord.utils.get(guild.text_channels, name="evenements")
+    if evenements_channel is None:
+        await ctx.send("Salon #evenements introuvable.")
+        return
+
+    count_checked = 0
+    count_posted = 0
+    count_deleted = 0
+
+    for gestion_channel in guild.text_channels:
+        if not gestion_channel.name.startswith("Gestion "):
+            continue
+
+        nom_groupe = gestion_channel.name[len("Gestion ") :]
+        role_groupe = discord.utils.get(guild.roles, name=f"groupe {nom_groupe}")
+        if role_groupe is None:
+            continue
+
+        membres_groupe = [m for m in guild.members if role_groupe in m.roles]
+        nb_membres = len(membres_groupe)
+        if nb_membres == 0:
+            continue
+
+        async for message in gestion_channel.history(limit=50):
+            if message.author == bot.user:
+                reactions = {str(r.emoji): r.count - 1 for r in message.reactions}
+                votes_pour = reactions.get("✅", 0)
+                votes_contre = reactions.get("❌", 0)
+
+                if votes_pour >= nb_membres / 2:
+                    # Message validé : poste dans evenements et ajoute réactions
+                    sent_message = await evenements_channel.send(
+                        f"Nouvel événement validé pour le groupe **{nom_groupe}** :\n\n{message.content}"
+                    )
+                    await sent_message.add_reaction("✅")
+                    await sent_message.add_reaction("❌")
+
+                    await message.delete()
+                    count_posted += 1
+                elif votes_contre > nb_membres / 2:
+                    # Message rejeté : supprime le message
+                    await message.delete()
+                    count_deleted += 1
+
+                count_checked += 1
+
+    await ctx.send(
+        f"Vérification terminée : {count_checked} messages analysés, {count_posted} validés, {count_deleted} supprimés."
+    )
+
+
+@bot.command()
+@commands.check(lambda ctx: ctx.channel.name.startswith("groupe "))
+async def event(ctx, *, message_propose: str):
+    guild = ctx.guild
+    nom_groupe = ctx.channel.name[len("groupe ") :]
+    gestion_channel = discord.utils.get(
+        guild.text_channels, name=f"Gestion {nom_groupe}"
+    )
+
+    if gestion_channel is None:
+        await ctx.send("Salon de gestion introuvable.")
+        return
+
+    texte_vote = (
+        f"Un nouvel événement a été proposé :\n"
+        f"« {message_propose} »\n\n"
+        "Si cet événement vous plaît, votez pour sa création ! Faites vite, afin qu’il soit disponible avant notre prochain rendez-vous.\n\n"
+        "Rappel : une majorité pour valide l’événement, une majorité contre le supprime."
+    )
+    vote_message = await gestion_channel.send(texte_vote)
+    await vote_message.add_reaction("✅")
+    await vote_message.add_reaction("❌")
+    await ctx.send(f"Proposition envoyée dans {gestion_channel.mention} pour vote.")
+
+
 @bot.event
 async def on_ready():
     print(f"Bot connecté en tant que {bot.user}")
