@@ -16,58 +16,72 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 
 @bot.command()
-@commands.has_role("Membre de la Meute")
 async def update(ctx):
     guild = ctx.guild
     evenements_channel = discord.utils.get(guild.text_channels, name="evenements")
+
     if evenements_channel is None:
-        await ctx.send("Salon #evenements introuvable.")
+        await ctx.send("❌ Impossible de trouver le salon 'evenements'.")
         return
 
-    count_checked = 0
-    count_posted = 0
-    count_deleted = 0
+    # Parcourt tous les salons de gestion
+    for gestion_channel in [
+        c for c in guild.text_channels if c.name.startswith("gestion-")
+    ]:
+        group_slug = gestion_channel.name.replace("gestion-", "", 1)
+        role = discord.utils.get(
+            guild.roles, name=f"Groupe {group_slug.replace('-', ' ').title()}"
+        )
 
-    for gestion_channel in guild.text_channels:
-        if not gestion_channel.name.startswith("gestion-"):
+        if role is None:
             continue
 
-        nom_groupe = gestion_channel.name[len("gestion-") :]
-        role_groupe = discord.utils.get(guild.roles, name=f"groupe-{nom_groupe}")
-        if role_groupe is None:
+        # Nombre de membres dans le groupe
+        members_in_group = [m for m in guild.members if role in m.roles]
+        member_count = len(members_in_group)
+
+        if member_count == 0:
             continue
 
-        membres_groupe = [m for m in guild.members if role_groupe in m.roles]
-        nb_membres = len(membres_groupe)
-        if nb_membres == 0:
-            continue
-
+        # Analyse des messages dans le salon gestion
         async for message in gestion_channel.history(limit=50):
-            if message.author == bot.user:
-                reactions = {str(r.emoji): r.count - 1 for r in message.reactions}
-                votes_pour = reactions.get("✅", 0)
-                votes_contre = reactions.get("❌", 0)
+            # Ignore les messages sans réactions
+            if not message.reactions:
+                continue
 
-                if votes_pour >= nb_membres / 2:
-                    # Message validé : poste dans evenements et ajoute réactions
-                    sent_message = await evenements_channel.send(
-                        f"Nouvel événement validé pour le groupe **{nom_groupe}** :\n\n{message.content}"
-                    )
-                    await sent_message.add_reaction("✅")
-                    await sent_message.add_reaction("❌")
+            # Récupère le nombre de ✅ et ❌
+            yes_reaction = discord.utils.get(message.reactions, emoji="✅")
+            no_reaction = discord.utils.get(message.reactions, emoji="❌")
 
-                    await message.delete()
-                    count_posted += 1
-                elif votes_contre > nb_membres / 2:
-                    # Message rejeté : supprime le message
-                    await message.delete()
-                    count_deleted += 1
+            yes_count = (
+                yes_reaction.count - 1 if yes_reaction else 0
+            )  # -1 pour enlever le bot
+            no_count = no_reaction.count - 1 if no_reaction else 0
 
-                count_checked += 1
+            # Si majorité pour → envoi dans evenements
+            if yes_count >= (member_count / 2):
+                # Vérifie que ce n'est pas déjà dans evenements
+                already_posted = False
+                async for evt_msg in evenements_channel.history(limit=100):
+                    if (
+                        message.embeds
+                        and evt_msg.embeds
+                        and evt_msg.embeds[0].description
+                        == message.embeds[0].description
+                    ):
+                        already_posted = True
+                        break
 
-    await ctx.send(
-        f"Vérification terminée : {count_checked} messages analysés, {count_posted} validés, {count_deleted} supprimés."
-    )
+                if not already_posted:
+                    new_msg = await evenements_channel.send(embed=message.embeds[0])
+                    await new_msg.add_reaction("✅")
+                    await new_msg.add_reaction("❌")
+
+            # Si majorité contre → supprime le message
+            elif no_count > (member_count / 2):
+                await message.delete()
+
+    await ctx.send("✅ Mise à jour terminée.")
 
 
 @bot.command()
