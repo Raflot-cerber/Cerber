@@ -6,6 +6,7 @@ from collections import Counter
 from datetime import datetime
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ui import Modal, Select, TextInput, View
 from dotenv import load_dotenv
@@ -253,10 +254,13 @@ class ProposeEventModal(Modal, title="Proposer un nouvel événement"):
         )
 
 
-@bot.command(name="proposer")
-@commands.has_role(EVENEMENT_ROLE_NAME)
-async def propose_command(ctx):
-    await ctx.send_modal(ProposeEventModal())
+@bot.tree.command(
+    name="proposer", description="Ouvre une fenêtre pour proposer un nouvel événement."
+)
+@app_commands.checks.has_role(EVENEMENT_ROLE_NAME)
+async def proposer_slash(interaction: discord.Interaction):
+    """Ouvre une fenêtre pour proposer un nouvel événement."""
+    await interaction.response.send_modal(ProposeEventModal())
 
 
 @bot.command(name="noter")
@@ -609,8 +613,8 @@ async def announce_winner():
             save_data(group_scores, group_scores_db)
 
             # Supprimer l'événement de la liste des propositions actives
-            del events_data[winner_id]
-            save_data({str(guild.id): events_data}, events_db)
+            events_data[winner_id]["status"] = "past"
+            save_data(events_data, events_db)
 
 
 @tasks.loop(hours=24)
@@ -639,6 +643,7 @@ async def monthly_intercommunity_event():
 
 
 @bot.command()
+@commands.has_permissions(manage_roles=True)
 async def groupe(ctx, nom: str, couleur: discord.Colour):
     member = ctx.author
     guild = ctx.guild
@@ -846,6 +851,11 @@ async def generate_leaderboard_embed(guild: discord.Guild):
 @bot.event
 async def on_ready():
     print(f"Bot connecté en tant que {bot.user}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synchronisé {len(synced)} commande(s)")
+    except Exception as e:
+        print(f"Erreur de synchronisation : {e}")
     print("Démarrage des tâches en arrière-plan...")
     check_recommendations.start()
     update_recommenders_list.start()
