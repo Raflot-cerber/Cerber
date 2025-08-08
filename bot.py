@@ -71,46 +71,40 @@ async def update(ctx):
 
 
 @bot.command()
-@commands.check(lambda ctx: ctx.channel.name.startswith("groupe "))
-async def event(ctx, *, message_propose: str):
-    member = ctx.author
+async def event(ctx, *, message: str):
+    # Vérifie juste si on est bien dans un salon texte "groupe ..."
+    if not ctx.channel.name.startswith("groupe "):
+        await ctx.send("❌ Cette commande doit être utilisée dans un salon de groupe.")
+        return
+
     guild = ctx.guild
-    channel = ctx.channel
+    group_name = ctx.channel.name.replace("groupe ", "")
 
-    # Récupère le nom du groupe à partir du channel, ex : "groupe Loups" -> "Loups"
-    nom_groupe = channel.name[len("groupe ") :]
-
-    # Trouve le rôle correspondant au groupe
-    role_groupe = discord.utils.get(guild.roles, name=f"groupe {nom_groupe}").lower()
-    if role_groupe is None:
-        await ctx.send("Erreur : groupe introuvable.")
-        return
-
-    # Vérifie que l'auteur a bien le rôle du groupe
-    if role_groupe not in member.roles:
-        await ctx.send(
-            "Tu ne fais pas partie de ce groupe, tu ne peux pas proposer d'événement ici."
-        )
-        return
-
-    # Trouve le salon "Gestion ---" correspondant
+    # Recherche du salon "gestion ..." correspondant (insensible à la casse)
     gestion_channel = discord.utils.get(
-        guild.text_channels, name=f"Gestion {nom_groupe}"
-    ).lower()
+        guild.text_channels, name=f"gestion {group_name}".lower()
+    )
+
     if gestion_channel is None:
-        await ctx.send("Salon de gestion introuvable.")
+        await ctx.send("❌ Impossible de trouver le salon de gestion du groupe.")
         return
 
-    texte_vote = (
-        f"Un nouvel événement a été proposé :\n"
-        f"« {message_propose} »\n\n"
-        "Si cet événement vous plaît, votez pour sa création ! Faites vite, afin qu’il soit disponible avant notre prochain rendez-vous.\n\n"
-        "Rappel : une majorité pour valide l’événement, une majorité contre le supprime."
+    # Envoi du message formaté dans "gestion ..."
+    embed = discord.Embed(
+        title="📢 Un nouvel événement a été proposé !",
+        description=f"« {message} »\n\n"
+        "Si cet événement vous plaît, votez pour sa création ! Faites vite, "
+        "afin qu’il soit disponible avant notre prochain rendez-vous.\n\n"
+        "Rappel : une majorité pour valide l’événement, une majorité contre le supprime.",
+        color=discord.Color.gold(),
     )
-    vote_message = await gestion_channel.send(texte_vote)
-    await vote_message.add_reaction("✅")
-    await vote_message.add_reaction("❌")
-    await ctx.send(f"Proposition envoyée dans {gestion_channel.mention} pour vote.")
+    event_message = await gestion_channel.send(embed=embed)
+
+    # Ajout des réactions de vote
+    await event_message.add_reaction("✅")
+    await event_message.add_reaction("❌")
+
+    await ctx.send(f"✅ Événement proposé et envoyé dans {gestion_channel.mention}")
 
 
 @bot.event
