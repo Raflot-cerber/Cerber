@@ -1,129 +1,145 @@
-import discord
-from discord.ext import commands, tasks
 import os
+
+import discord
+from discord.ext import commands
 from dotenv import load_dotenv
-import asyncio
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True  # Important pour gérer les rôles et membres
+intents.guilds = True
+intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-utilisateurs_deja_annonces = set()
-votes_en_cours = {}  # message_id : { "user_id_candidat": int, "message_vote": message objet }
 
 @bot.event
 async def on_ready():
-    print(f"✅ Bot connecté en tant que {bot.user}")
+    print(f"Bot connecté en tant que {bot.user}")
 
-@bot.event
-async def on_message(message):
-    if message.author == bot.user:
+
+def has_group_role(member):
+    # Cherche un rôle qui commence par "groupe "
+    return any(role.name.startswith("groupe ") for role in member.roles)
+
+
+@bot.command()
+async def groupe(ctx, nom: str, couleur: discord.Colour):
+    member = ctx.author
+    guild = ctx.guild
+
+    if has_group_role(member):
+        await ctx.send(
+            "Tu fais déjà partie d'un groupe. Impossible d'en créer un autre."
+        )
         return
 
-    if message.channel.name == "nouveaux-arrivants👋":
-        if message.author.id not in utilisateurs_deja_annonces:
-            utilisateurs_deja_annonces.add(message.author.id)
-
-            channel_liste = discord.utils.get(message.guild.channels, name="liste📜")
-            if channel_liste:
-                texte = (
-                    f"Oyé oyé ! {message.author.display_name} frappe à la porte pour rejoindre la meute !\n"
-                    "La décision est désormais entre vos mains : si la majorité l’accepte, il pourra intégrer nos rangs.\n\n"
-                    "Voici un petit message de sa part :\n"
-                    f"« {message.content} »\n\n"
-                    "N’hésitez pas à le contacter pour en apprendre davantage sur lui !\n\n"
-                    "Réagissez avec 👍 pour accepter, ou 👎 pour refuser."
-                )
-                msg_vote = await channel_liste.send(texte)
-
-                # Ajout des réactions pour voter
-                await msg_vote.add_reaction("👍")
-                await msg_vote.add_reaction("👎")
-
-                # On garde en mémoire le message de vote et l'ID du candidat
-                votes_en_cours[msg_vote.id] = {
-                    "user_id_candidat": message.author.id,
-                    "message_vote": msg_vote,
-                    "guild": message.guild
-                }
-
-    await bot.process_commands(message)
-
-@bot.event
-async def on_reaction_add(reaction, user):
-    # Ignorer les réactions du bot lui-même
-    if user == bot.user:
+    # Créer un nouveau rôle avec la couleur donnée
+    try:
+        nouveau_role = await guild.create_role(name=f"groupe {nom}", colour=couleur)
+    except discord.Forbidden:
+        await ctx.send("Je n'ai pas la permission de créer un rôle.")
+        return
+    except discord.HTTPException as e:
+        await ctx.send(f"Erreur lors de la création du rôle : {e}")
         return
 
-    msg = reaction.message
+    # Ajouter le rôle au membre qui a créé le groupe
+    await member.add_roles(nouveau_role)
 
-    # Vérifier si c'est un message de vote en cours
-    if msg.id in votes_en_cours:
-        if str(reaction.emoji) not in ["👍", "👎"]:
-            return  # On s'intéresse qu'aux votes
+    # Créer une catégorie pour organiser les salons du groupe
+    categorie = await guild.create_category(f"Groupe {nom}")
 
-        guild = votes_en_cours[msg.id]["guild"]
-        candidat_id = votes_en_cours[msg.id]["user_id_candidat"]
+    # Permissions à donner uniquement au groupe et aux admins
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(
+            read_messages=False, connect=False
+        ),
+        nouveau_role: discord.PermissionOverwrite(
+            read_messages=True, send_messages=True, connect=True, speak=True
+        ),
+    }
 
-        # Récupérer le rôle "Membre de la Meute"
-        role_meute = discord.utils.get(guild.roles, name="Membre de la Meute")
-        if role_meute is None:
-            print("Le rôle 'Membre de la Meute' n'existe pas.")
-            return
+    # Autoriser les admins (avec manage_channels ou admin) à accéder aussi
+    for role in guild.roles:
+        if role.permissions.administrator or role.permissions.manage_channels:
+            overwrites[role] = discord.PermissionOverwrite(
+                read_messages=True, send_messages=True, connect=True, speak=True
+            )
 
-        # Récupérer les membres qui ont ce rôle
-        membres_meute = [m for m in guild.members if role_meute in m.roles]
+    # Créer les salons dans la catégorie
+    vocal = await guild.create_voice_channel(
+        f"vocal {nom}", category=categorie, overwrites=overwrites
+    )
+    texte_groupe = await guild.create_text_channel(
+        f"groupe {nom}", category=categorie, overwrites=overwrites
+    )
+    gestion = await guild.create_text_channel(
+        f"Gestion {nom}", category=categorie, overwrites=overwrites
+    )
 
-        # Compter les réactions sur le message de vote
-        reaction_approve = discord.utils.get(msg.reactions, emoji="👍")
-        reaction_reject = discord.utils.get(msg.reactions, emoji="👎")
+    await ctx.send(
+        f"Groupe '{nom}' créé avec succès ! Rôle, salons vocaux et textuels sont prêts."
+    )
 
-        count_approve = 0
-        count_reject = 0
 
-        if reaction_approve:
-            users_approve = await reaction_approve.users().flatten()
-            count_approve = sum(1 for u in users_approve if u in membres_meute)
+@bot.command()
+async def leave(ctx):
+    member = ctx.author
+    # Trouve le rôle de groupe actuel
+    role_groupe = None
+    for role in member.roles:
+        if role.name.startswith("groupe "):
+            role_groupe = role
+            break
 
-        if reaction_reject:
-            users_reject = await reaction_reject.users().flatten()
-            count_reject = sum(1 for u in users_reject if u in membres_meute)
+    if role_groupe is None:
+        await ctx.send("Tu ne fais partie d'aucun groupe.")
+        return
 
-        # Condition pour accepter : majorité des votes pour
-        total_votes = count_approve + count_reject
+    await member.remove_roles(role_groupe)
+    await ctx.send(f"Tu as quitté le groupe **{role_groupe.name[7:]}**.")
 
-        # On attend au moins 3 votes pour statuer (tu peux changer)
-        if total_votes >= 3:
-            if count_approve > count_reject:
-                guild = votes_en_cours[msg.id]["guild"]
-                candidat = guild.get_member(candidat_id)
-                if candidat is None:
-                    await msg.channel.send("Erreur : Candidat introuvable.")
-                    del votes_en_cours[msg.id]
-                    return
 
-                if role_meute not in candidat.roles:
-                    await candidat.add_roles(role_meute)
-                    await msg.channel.send(
-                        f"🎉 {candidat.display_name} a été accepté dans la meute et a reçu le rôle **Membre de la Meute** !"
-                    )
-                else:
-                    await msg.channel.send(f"{candidat.display_name} a déjà le rôle **Membre de la Meute**.")
+@bot.command()
+async def join(ctx, *, nom_groupe: str):
+    member = ctx.author
+    guild = ctx.guild
 
-                # On supprime ce vote
-                del votes_en_cours[msg.id]
+    # Cherche le rôle du groupe demandé (nom exact après "groupe ")
+    role_demande = discord.utils.get(guild.roles, name=f"groupe {nom_groupe}")
 
-            elif count_reject >= count_approve:
-                await msg.channel.send("Le candidat n'a pas été accepté par la majorité.")
-                del votes_en_cours[msg.id]
+    if role_demande is None:
+        await ctx.send(f"Le groupe '{nom_groupe}' n'existe pas.")
+        return
+
+    # Vérifie le nombre de membres dans ce groupe
+    membres_groupe = [m for m in guild.members if role_demande in m.roles]
+    if len(membres_groupe) >= 10:
+        await ctx.send("Ce groupe est complet (10 membres max).")
+        return
+
+    # Trouve l'ancien rôle de groupe de l'utilisateur
+    ancien_role = None
+    for role in member.roles:
+        if role.name.startswith("groupe "):
+            ancien_role = role
+            break
+
+    # Enlève l'ancien groupe si existe
+    if ancien_role is not None:
+        await member.remove_roles(ancien_role)
+
+    # Ajoute le nouveau rôle
+    await member.add_roles(role_demande)
+    await ctx.send(f"Tu as rejoint le groupe **{nom_groupe}**.")
+
 
 @bot.command()
 async def ping(ctx):
     await ctx.send("🏓 Pong!")
+
 
 bot.run(TOKEN)
