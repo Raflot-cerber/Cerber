@@ -52,32 +52,52 @@ async def groupe(ctx, nom: str, couleur: discord.Colour):
     # Créer une catégorie pour organiser les salons du groupe
     categorie = await guild.create_category(f"Groupe {nom}")
 
-    # Permissions à donner uniquement au groupe et aux admins
-    overwrites = {
+    # Permissions générales : personne sauf groupe et admins ne voit rien
+    overwrites_base = {
         guild.default_role: discord.PermissionOverwrite(
-            read_messages=False, connect=False
-        ),
-        nouveau_role: discord.PermissionOverwrite(
-            read_messages=True, send_messages=True, connect=True, speak=True
+            read_messages=False, send_messages=False, connect=False
         ),
     }
 
-    # Autoriser les admins (avec manage_channels ou admin) à accéder aussi
+    # Permissions du groupe sur les salons "groupe" et "vocal"
+    overwrites_groupe = overwrites_base.copy()
+    overwrites_groupe.update(
+        {
+            nouveau_role: discord.PermissionOverwrite(
+                read_messages=True, send_messages=True, connect=True, speak=True
+            ),
+        }
+    )
+
+    # Permissions du groupe sur le salon "Gestion" (lecture seule)
+    overwrites_gestion = overwrites_base.copy()
+    overwrites_gestion.update(
+        {
+            nouveau_role: discord.PermissionOverwrite(
+                read_messages=True, send_messages=False
+            ),
+        }
+    )
+
+    # Ajout des admins sur tous les salons
     for role in guild.roles:
         if role.permissions.administrator or role.permissions.manage_channels:
-            overwrites[role] = discord.PermissionOverwrite(
+            overwrites_groupe[role] = discord.PermissionOverwrite(
                 read_messages=True, send_messages=True, connect=True, speak=True
             )
+            overwrites_gestion[role] = discord.PermissionOverwrite(
+                read_messages=True, send_messages=True
+            )
 
-    # Créer les salons dans la catégorie
+    # Création des salons
     vocal = await guild.create_voice_channel(
-        f"vocal {nom}", category=categorie, overwrites=overwrites
+        f"vocal {nom}", category=categorie, overwrites=overwrites_groupe
     )
     texte_groupe = await guild.create_text_channel(
-        f"groupe {nom}", category=categorie, overwrites=overwrites
+        f"groupe {nom}", category=categorie, overwrites=overwrites_groupe
     )
     gestion = await guild.create_text_channel(
-        f"Gestion {nom}", category=categorie, overwrites=overwrites
+        f"Gestion {nom}", category=categorie, overwrites=overwrites_gestion
     )
 
     await ctx.send(
