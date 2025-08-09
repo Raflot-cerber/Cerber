@@ -17,14 +17,14 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 
 # --- Noms des Rôles & Salons ---
 # Ces noms doivent correspondre exactement à ceux de votre serveur Discord.
-ASSEMBLEE_CHANNEL_NAME = "assemblée"
-EVENT_PROPOSALS_CHANNEL_NAME = "propositions-evenements"
-WELCOME_CHANNEL_NAME = "bienvenue-lis-moi"
-RECOMMENDERS_CHANNEL_NAME = "qui-peut-me-recommander"
+ASSEMBLEE_CHANNEL_NAME = "📢-assemblée"
+EVENT_PROPOSALS_CHANNEL_NAME = "✨-propositions-événements"
+WELCOME_CHANNEL_NAME = "👋-bienvenue-lis-moi"
+RECOMMENDERS_CHANNEL_NAME = "🙋-qui-peut-recommander"
 LOG_CHANNEL_NAME_ADMIN = "bot-logs"
-PROFILES_CHANNEL_NAME = "profils-des-groupes"
-LEADERBOARD_CHANNEL_NAME = "classements"
-REGISTRE_CHANNEL_NAME = "registre-de-la-meute"
+PROFILES_CHANNEL_NAME = "🪪-profils-des-groupes"
+LEADERBOARD_CHANNEL_NAME = "🏆-classements"
+REGISTRE_CHANNEL_NAME = "⚜️-registre-de-la-meute"
 
 EVENEMENT_ROLE_NAME = "Membre de la Meute"
 MONTHLY_WINNER_ROLE_NAME = "🏆 Groupe du Mois"
