@@ -119,7 +119,6 @@ async def update_event_proposals_list(guild: discord.Guild):
             )
         embed.description += "\n\n" + event_list_str
 
-    # Chercher un message existant du bot pour le modifier, sinon en créer un nouveau
     async for message in proposals_channel.history(limit=50):
         if (
             message.author == bot.user
@@ -130,7 +129,7 @@ async def update_event_proposals_list(guild: discord.Guild):
                 await message.edit(embed=embed)
                 return
             except discord.NotFound:
-                continue  # Le message a été supprimé entre-temps
+                continue
 
     await proposals_channel.send(embed=embed)
 
@@ -140,7 +139,6 @@ async def update_event_proposals_list(guild: discord.Guild):
 # =================================================================================
 
 
-# --- Commande d'aide ---
 @bot.tree.command(
     name="aide", description="Affiche la liste des commandes et leur utilité."
 )
@@ -152,7 +150,7 @@ async def aide(interaction: discord.Interaction):
     )
     embed.add_field(
         name="🐺 Gestion des Groupes",
-        value="`/groupe` : Crée un nouveau groupe (admin).\n"
+        value="`/groupe` : Crée un nouveau groupe.\n"
         "`/groupes` : Affiche la liste des groupes à rejoindre.\n"
         "`/join` : Rejoint un groupe existant.\n"
         "`/leave` : Quitte votre groupe actuel.\n"
@@ -162,6 +160,7 @@ async def aide(interaction: discord.Interaction):
     embed.add_field(
         name="🙋‍♂️ Gouvernance",
         value="`/recommander` : Propose un nouveau membre à la cooptation.\n"
+        "`/exclure` : Lance un vote pour exclure un membre.\n"
         "`/noter` : Donne une note de 1 à 5 à une proposition d'événement.",
         inline=False,
     )
@@ -175,18 +174,25 @@ async def aide(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# --- Commandes de gestion des membres et groupes ---
 @bot.tree.command(
-    name="groupe",
-    description="Crée un nouveau groupe avec rôle et salons dédiés (Admin).",
+    name="groupe", description="Crée un nouveau groupe avec rôle et salons dédiés."
 )
 @app_commands.describe(
     nom="Le nom du nouveau groupe.",
     couleur="Le code hexadécimal de la couleur (ex: #FF5733).",
 )
-@app_commands.checks.has_permissions(manage_roles=True)
+@app_commands.checks.has_role(EVENEMENT_ROLE_NAME)
 async def groupe(interaction: discord.Interaction, nom: str, couleur: str):
     await interaction.response.defer(ephemeral=True)
+
+    if discord.utils.find(
+        lambda r: r.name.startswith("groupe "), interaction.user.roles
+    ):
+        await interaction.followup.send(
+            "❌ Vous faites déjà partie d'un groupe. Quittez-le avec `/leave` pour en créer un nouveau.",
+            ephemeral=True,
+        )
+        return
 
     try:
         couleur_obj = discord.Colour.from_str(couleur)
@@ -211,6 +217,7 @@ async def groupe(interaction: discord.Interaction, nom: str, couleur: str):
         colour=couleur_obj,
         reason=f"Création du groupe par {interaction.user}",
     )
+    await interaction.user.add_roles(nouveau_role)  # Le créateur rejoint son groupe
 
     categorie = await guild.create_category(f"🐺 GROUPE {nom.upper()}")
     overwrites = {
@@ -227,7 +234,8 @@ async def groupe(interaction: discord.Interaction, nom: str, couleur: str):
     await categorie.create_voice_channel(f"🔊 Vocal - {nom}", overwrites=overwrites)
 
     await interaction.followup.send(
-        f"✅ Le groupe '{nom}' a été créé avec succès !", ephemeral=True
+        f"✅ Le groupe '{nom}' a été créé avec succès et vous en êtes le premier membre !",
+        ephemeral=True,
     )
     await log_action(
         guild,
@@ -427,6 +435,64 @@ async def recommander(interaction: discord.Interaction, membre: discord.Member):
     )
 
 
+@bot.tree.command(
+    name="exclure", description="Lance un vote pour exclure un membre de la meute."
+)
+@app_commands.describe(
+    membre="Le membre à exclure.", raison="La raison de l'exclusion."
+)
+@app_commands.checks.has_role(EVENEMENT_ROLE_NAME)
+async def exclure(
+    interaction: discord.Interaction, membre: discord.Member, raison: str
+):
+    if membre == interaction.user:
+        await interaction.response.send_message(
+            "❌ Vous ne pouvez pas vous exclure vous-même.", ephemeral=True
+        )
+        return
+    if membre.bot:
+        await interaction.response.send_message(
+            "❌ Vous ne pouvez pas exclure un bot.", ephemeral=True
+        )
+        return
+    if membre.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "❌ Vous ne pouvez pas exclure un administrateur.", ephemeral=True
+        )
+        return
+
+    assemblee_channel = discord.utils.get(
+        interaction.guild.text_channels, name=ASSEMBLEE_CHANNEL_NAME
+    )
+    if not assemblee_channel:
+        await interaction.response.send_message(
+            f"❌ Le salon `{ASSEMBLEE_CHANNEL_NAME}` est introuvable.", ephemeral=True
+        )
+        return
+
+    embed = discord.Embed(
+        title="Vote d'exclusion",
+        description=f"{interaction.user.mention} a lancé un vote pour exclure {membre.mention} de la meute.",
+        color=discord.Color.red(),
+    )
+    embed.add_field(name="Raison", value=raison, inline=False)
+    embed.set_footer(text=f"ID du membre à exclure: {membre.id}")
+
+    msg = await assemblee_channel.send(embed=embed)
+    await msg.add_reaction("✅")
+
+    await interaction.response.send_message(
+        f"Le vote d'exclusion pour {membre.mention} a été lancé dans {assemblee_channel.mention}.",
+        ephemeral=True,
+    )
+    await log_action(
+        interaction.guild,
+        "Vote d'Exclusion Lancé",
+        f"{interaction.user.mention} a lancé un vote pour exclure {membre.mention} pour la raison : {raison}.",
+        color=discord.Color.dark_red(),
+    )
+
+
 class GroupProfileModal(Modal, title="Mise à jour du profil de groupe"):
     description = TextInput(
         label="Description de votre groupe",
@@ -608,9 +674,7 @@ async def noter(
     event["average_rating"] = round(total_ratings / len(event["ratings"]), 2)
     save_data(events_data, events_db)
 
-    await update_event_proposals_list(
-        interaction.guild
-    )  # Mise à jour instantanée de la liste
+    await update_event_proposals_list(interaction.guild)
     await interaction.followup.send(
         f'✅ Votre note de **{note.value}/5** a bien été prise en compte pour l\'événement "{event["title"]}".',
         ephemeral=True,
@@ -780,9 +844,7 @@ async def announce_winner():
 
             events_data[server_id][winner_id]["status"] = "past"
             save_data(events_data, events_db)
-            await update_event_proposals_list(
-                guild
-            )  # Mettre à jour la liste des propositions
+            await update_event_proposals_list(guild)
 
             del votes_data[latest_vote_id]
             save_data(votes_data, weekly_votes_db)
@@ -893,13 +955,11 @@ async def on_ready():
         print(f"Erreur de synchronisation : {e}")
 
     print("Démarrage des tâches en arrière-plan...")
-    # Les tâches de vérification des votes sont supprimées et remplacées par on_raw_reaction_add
     weekly_vote_announcement.start()
     announce_winner.start()
     monthly_intercommunity_event.start()
     update_leaderboard.start()
 
-    # Initialiser la liste des propositions au démarrage
     for guild in bot.guilds:
         await update_event_proposals_list(guild)
 
@@ -941,7 +1001,6 @@ async def on_member_remove(member):
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     """Gère les votes en temps réel dès qu'une réaction est ajoutée."""
-    # Ignorer les réactions du bot lui-même
     if payload.user_id == bot.user.id:
         return
 
@@ -953,21 +1012,18 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if not channel:
         return
 
-    # --- GESTION DES VOTES DE RECOMMANDATION ---
+    try:
+        message = await channel.fetch_message(payload.message_id)
+    except discord.NotFound:
+        return
+
+    if not (message.author == bot.user and message.embeds):
+        return
+
+    embed = message.embeds[0]
+
+    # --- GESTION DES VOTES DANS L'ASSEMBLÉE ---
     if channel.name == ASSEMBLEE_CHANNEL_NAME and str(payload.emoji) == "✅":
-        try:
-            message = await channel.fetch_message(payload.message_id)
-        except discord.NotFound:
-            return
-
-        # Vérifier si c'est bien un message de recommandation du bot
-        if not (
-            message.author == bot.user
-            and message.embeds
-            and "ID du membre:" in message.embeds[0].footer.text
-        ):
-            return
-
         member_role = discord.utils.get(guild.roles, name=EVENEMENT_ROLE_NAME)
         if not member_role:
             return
@@ -976,15 +1032,18 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         majority_needed = (total_members // 2) + 1
 
         reaction = discord.utils.get(message.reactions, emoji="✅")
-        if reaction and reaction.count >= majority_needed:
-            member_id_str = message.embeds[0].footer.text.split(": ")[1]
+        if not (reaction and reaction.count >= majority_needed):
+            return
 
+        # --- CAS 1: VOTE DE RECOMMANDATION ---
+        if embed.title == "Nouvelle recommandation de membre":
+            member_id_str = embed.footer.text.split(": ")[1]
             data = load_data(recommendations_db)
             server_id = str(guild.id)
             info = data.get(server_id, {}).get(member_id_str)
 
             if not info:
-                return  # Recommandation déjà traitée
+                return
 
             new_member = guild.get_member(int(member_id_str))
             recommender = guild.get_member(info["recommender_id"])
@@ -1006,7 +1065,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                 await log_action(
                     guild,
                     "Membre Validé",
-                    f"{new_member.mention} a été validé sur recommandation de {recommender.mention}.",
+                    f"{new_member.mention} a été validé par {recommender.mention}.",
                     color=discord.Color.green(),
                 )
                 await message.delete()
@@ -1014,21 +1073,38 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                 del data[server_id][member_id_str]
                 save_data(data, recommendations_db)
 
+        # --- CAS 2: VOTE D'EXCLUSION ---
+        elif embed.title == "Vote d'exclusion":
+            member_id_str = embed.footer.text.split(": ")[1]
+            member_to_kick = guild.get_member(int(member_id_str))
+
+            if member_to_kick:
+                try:
+                    await member_to_kick.kick(reason="Exclu par vote de la communauté.")
+                    await channel.send(
+                        f"✅ Le vote est terminé. {member_to_kick.mention} a été exclu de la meute."
+                    )
+                    await log_action(
+                        guild,
+                        "Membre Exclu",
+                        f"{member_to_kick.mention} a été exclu par vote.",
+                        color=discord.Color.red(),
+                    )
+                except discord.Forbidden:
+                    await channel.send(
+                        f"❌ Je n'ai pas la permission d'exclure {member_to_kick.mention}."
+                    )
+                    await log_action(
+                        guild,
+                        "Erreur d'Exclusion",
+                        f"Tentative d'exclusion de {member_to_kick.mention} échouée.",
+                        color=discord.Color.orange(),
+                    )
+
+            await message.delete()
+
     # --- GESTION DES VOTES DE PROPOSITION D'ÉVÉNEMENT ---
     if channel.name.startswith("🔒-gestion-"):
-        try:
-            message = await channel.fetch_message(payload.message_id)
-        except discord.NotFound:
-            return
-
-        # Vérifier si c'est un message de proposition du bot
-        if not (
-            message.author == bot.user
-            and message.embeds
-            and "Nouvelle proposition :" in message.embeds[0].title
-        ):
-            return
-
         group_name_slug = channel.name[len("🔒-gestion-") :]
         group_role = discord.utils.find(
             lambda r: r.name[7:].lower().replace(" ", "-") == group_name_slug,
@@ -1043,16 +1119,13 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         yes_reac = discord.utils.get(message.reactions, emoji="✅")
         no_reac = discord.utils.get(message.reactions, emoji="❌")
 
-        # Si le vote "POUR" atteint la majorité
         if (
             str(payload.emoji) == "✅"
             and yes_reac
             and yes_reac.count >= majority_needed
         ):
-            event_title = message.embeds[0].title[len("Nouvelle proposition : ") :]
-            category_field = discord.utils.get(
-                message.embeds[0].fields, name="Catégorie"
-            )
+            event_title = embed.title[len("Nouvelle proposition : ") :]
+            category_field = discord.utils.get(embed.fields, name="Catégorie")
             event_category = category_field.value if category_field else "[Autre]"
 
             events_data = load_data(events_db)
@@ -1071,15 +1144,14 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
             }
             save_data(events_data, events_db)
 
-            await update_event_proposals_list(guild)  # Mettre à jour la liste publique
+            await update_event_proposals_list(guild)
             await message.delete()
 
-        # Si le vote "CONTRE" atteint la majorité
         elif (
             str(payload.emoji) == "❌" and no_reac and no_reac.count >= majority_needed
         ):
             await channel.send(
-                f'La proposition "{message.embeds[0].title[len("Nouvelle proposition : ") :]}" a été rejetée par le groupe.',
+                f'La proposition "{embed.title[len("Nouvelle proposition : ") :]}" a été rejetée.',
                 delete_after=60,
             )
             await message.delete()
