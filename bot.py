@@ -17,14 +17,14 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 
 # --- Noms des Rôles & Salons ---
 # Ces noms doivent correspondre exactement à ceux de votre serveur Discord.
-ASSEMBLEE_CHANNEL_NAME = "📢-assemblée"
-EVENT_PROPOSALS_CHANNEL_NAME = "✨-propositions-événements"
-WELCOME_CHANNEL_NAME = "👋-bienvenue-lis-moi"
-RECOMMENDERS_CHANNEL_NAME = "🙋-qui-peut-recommander"
+ASSEMBLEE_CHANNEL_NAME = "assemblée"
+EVENT_PROPOSALS_CHANNEL_NAME = "propositions-evenements"
+WELCOME_CHANNEL_NAME = "bienvenue-lis-moi"
+RECOMMENDERS_CHANNEL_NAME = "qui-peut-me-recommander"
 LOG_CHANNEL_NAME_ADMIN = "bot-logs"
-PROFILES_CHANNEL_NAME = "🪪-profils-des-groupes"
-LEADERBOARD_CHANNEL_NAME = "🏆-classements"
-REGISTRE_CHANNEL_NAME = "⚜️-registre-de-la-meute"
+PROFILES_CHANNEL_NAME = "profils-des-groupes"
+LEADERBOARD_CHANNEL_NAME = "classements"
+REGISTRE_CHANNEL_NAME = "registre-de-la-meute"
 
 EVENEMENT_ROLE_NAME = "Membre de la Meute"
 MONTHLY_WINNER_ROLE_NAME = "🏆 Groupe du Mois"
@@ -167,7 +167,7 @@ async def groupe(interaction: discord.Interaction, nom: str, couleur: str):
     }
 
     nom_slug = nom.lower().replace(" ", "-")
-    await categorie.create_text_channel(f"💬-{nom_slug}", overwrites=overwrites)
+    await categorie.create_text_channel(f"�-{nom_slug}", overwrites=overwrites)
     await categorie.create_text_channel(f"🔒-gestion-{nom_slug}", overwrites=overwrites)
     await categorie.create_voice_channel(f"🔊 Vocal - {nom}", overwrites=overwrites)
 
@@ -994,6 +994,24 @@ async def on_member_join(member):
             color=discord.Color.blue(),
         )
         await channel.send(content=member.mention, embed=embed)
+
+
+@bot.event
+async def on_member_remove(member):
+    """Nettoie une recommandation en attente si le membre quitte le serveur."""
+    data = load_data(recommendations_db)
+    server_id = str(member.guild.id)
+    member_id_str = str(member.id)
+
+    if server_id in data and member_id_str in data[server_id]:
+        del data[server_id][member_id_str]
+        save_data(data, recommendations_db)
+        await log_action(
+            member.guild,
+            "Nettoyage de Recommandation",
+            f"La recommandation en attente pour **{member.display_name}** a été supprimée car il/elle a quitté le serveur.",
+            color=discord.Color.dark_red(),
+        )
 
 
 # --- Démarrage du Bot ---
