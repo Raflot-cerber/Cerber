@@ -20,16 +20,19 @@ ASSEMBLEE_CHANNEL_NAME = "assemblée"
 EVENT_PROPOSALS_CHANNEL_NAME = "propositions-evenements"
 WELCOME_CHANNEL_NAME = "bienvenue-lis-moi"
 RECOMMENDERS_CHANNEL_NAME = "qui-peut-me-recommander"
-LOG_CHANNEL_NAME_ADMIN = "bot-logs"  # Journal d'actions pour admins
+LOG_CHANNEL_NAME_ADMIN = "bot-logs"
 PROFILES_CHANNEL_NAME = "profils-des-groupes"
 LEADERBOARD_CHANNEL_NAME = "classements"
+REGISTRE_CHANNEL_NAME = "registre-de-la-meute"  # Ajout pour le journal public
 
 EVENEMENT_ROLE_NAME = "Membre de la Meute"
 MONTHLY_WINNER_ROLE_NAME = "🏆 Groupe du Mois"
+MAX_GROUP_MEMBERS = 10
 
 
-# --- Base de données (JSON) ---
+# --- Gestion de la base de données (JSON) ---
 def load_data(file_name):
+    """Charge les données depuis un fichier JSON."""
     try:
         with open(file_name, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -38,6 +41,7 @@ def load_data(file_name):
 
 
 def save_data(data, file_name):
+    """Sauvegarde les données dans un fichier JSON."""
     with open(file_name, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
@@ -46,13 +50,14 @@ def save_data(data, file_name):
 recommendations_db = "recommendations.json"
 events_db = "events.json"
 group_scores_db = "group_scores.json"
-last_event_db = "last_event.json"
+weekly_votes_db = "weekly_votes.json"  # Fichier pour stocker les votes de la semaine
 
 
 # --- Journal d'actions (Logging) ---
 async def log_action(
     guild: discord.Guild, title: str, description: str, color=discord.Color.dark_grey()
 ):
+    """Envoie un message de log dans le salon dédié aux admins."""
     log_channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME_ADMIN)
     if log_channel:
         embed = discord.Embed(title=title, description=description, color=color)
@@ -60,138 +65,358 @@ async def log_action(
         try:
             await log_channel.send(embed=embed)
         except discord.Forbidden:
-            pass
+            print(
+                f"Erreur: Impossible d'envoyer un log dans le salon '{LOG_CHANNEL_NAME_ADMIN}'. Permissions manquantes."
+            )
 
 
-# --- Bot Setup ---
+# --- Configuration du Bot ---
 intents = discord.Intents.default()
-intents.message_content = True
-intents.guilds = True
 intents.members = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
-bot.remove_command("help")
+intents.message_content = True  # Nécessaire pour certaines vérifications
+# On passe à un bot sans préfixe de commande, tout se fera par slash commands
+bot = commands.Bot(command_prefix=commands.when_mentioned_or("§"), intents=intents)
 
 
 # =================================================================================
-# === AIDE
+# === COMMANDES SLASH (/)
 # =================================================================================
-@bot.group(name="aide", invoke_without_command=True)
-async def custom_help(ctx):
+
+
+# --- Commande d'aide ---
+@bot.tree.command(
+    name="aide", description="Affiche la liste des commandes et leur utilité."
+)
+async def aide(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🤖 Aide du Bot de la Meute",
-        description="Voici la liste des commandes disponibles. Utilisez `!aide <commande>` pour plus de détails.",
+        description="Voici la liste des commandes slash (/) disponibles pour interagir avec la meute.",
         color=discord.Color.blue(),
     )
     embed.add_field(
-        name="🙋‍♂️ Membres & Groupes",
-        value="`recommander`, `groupe`, `profil`, `join`, `leave`",
+        name="🐺 Gestion des Groupes",
+        value="`/groupe` : Crée un nouveau groupe (admin).\n"
+        "`/groupes` : Affiche la liste des groupes à rejoindre.\n"
+        "`/join` : Rejoint un groupe existant.\n"
+        "`/leave` : Quitte votre groupe actuel.\n"
+        "`/profil` : Met à jour la description de votre groupe.",
         inline=False,
     )
-    embed.add_field(name="🎉 Événements", value="`proposer`, `noter`", inline=False)
-    embed.add_field(name="🏆 Compétition", value="`classement`", inline=False)
-    await ctx.send(embed=embed)
-
-
-# =================================================================================
-# === COMMANDES UTILISATEURS
-# =================================================================================
+    embed.add_field(
+        name="🙋‍♂️ Gouvernance",
+        value="`/recommander` : Propose un nouveau membre à la cooptation.\n"
+        "`/noter` : Donne une note de 1 à 5 à une proposition d'événement.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🎉 Événements & Compétition",
+        value="`/proposer` : Ouvre un formulaire pour proposer un nouvel événement.\n"
+        "`/classement` : Affiche les classements actuels.",
+        inline=False,
+    )
+    embed.set_footer(text="Toutes les commandes commencent par un /")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # --- Commandes de gestion des membres et groupes ---
-@bot.command(name="recommander")
-@commands.has_role(EVENEMENT_ROLE_NAME)
-async def recommend(ctx, new_member: discord.Member):
-    data = load_data(recommendations_db)
-    server_id = str(ctx.guild.id)
-    if server_id not in data:
-        data[server_id] = {}
-    if str(new_member.id) in data[server_id]:
-        await ctx.send("Ce membre est déjà en cours de validation.", ephemeral=True)
-        return
-    data[server_id][str(new_member.id)] = {
-        "recommender_id": ctx.author.id,
-        "votes": {str(ctx.author.id)},
-        "timestamp": datetime.utcnow().isoformat(),
-    }
-    save_data(data, recommendations_db)
-    assemblee_channel = discord.utils.get(
-        ctx.guild.text_channels, name=ASSEMBLEE_CHANNEL_NAME
-    )
-    if not assemblee_channel:
-        await ctx.send(
-            f"Le salon `{ASSEMBLEE_CHANNEL_NAME}` est introuvable.", ephemeral=True
-        )
-        return
-    embed = discord.Embed(
-        title="Nouvelle recommandation de membre",
-        description=f"{ctx.author.mention} a recommandé {new_member.mention} pour rejoindre la meute.",
-        color=discord.Color.blue(),
-    )
-    embed.set_footer(text=f"ID du membre: {new_member.id}")
-    msg = await assemblee_channel.send(embed=embed)
-    await msg.add_reaction("✅")
-    await ctx.send(
-        f"Votre recommandation pour {new_member.mention} a été soumise au vote dans {assemblee_channel.mention}.",
-        ephemeral=True,
-    )
-    await log_action(
-        ctx.guild,
-        "Recommandation",
-        f"{ctx.author.mention} a recommandé {new_member.mention}.",
-        color=discord.Color.blue(),
-    )
+@bot.tree.command(
+    name="groupe",
+    description="Crée un nouveau groupe avec rôle et salons dédiés (Admin).",
+)
+@app_commands.describe(
+    nom="Le nom du nouveau groupe.",
+    couleur="Le code hexadécimal de la couleur (ex: #FF5733).",
+)
+@app_commands.checks.has_permissions(manage_roles=True)
+async def groupe(interaction: discord.Interaction, nom: str, couleur: str):
+    await interaction.response.defer(ephemeral=True)
 
-
-@bot.command(name="profil")
-@commands.has_role(EVENEMENT_ROLE_NAME)
-async def group_profile(ctx, *, description: str):
-    profile_channel = discord.utils.get(
-        ctx.guild.text_channels, name=PROFILES_CHANNEL_NAME
-    )
-    if not profile_channel:
-        await ctx.send(
-            f"❌ Le salon `{PROFILES_CHANNEL_NAME}` est introuvable.", ephemeral=True
-        )
-        return
-    author_group_role = discord.utils.find(
-        lambda r: r.name.startswith("groupe "), ctx.author.roles
-    )
-    if not author_group_role:
-        await ctx.send(
-            "❌ Vous devez faire partie d'un groupe pour utiliser cette commande.",
+    # Validation et conversion de la couleur
+    try:
+        couleur_obj = discord.Colour.from_str(couleur)
+    except ValueError:
+        await interaction.followup.send(
+            "❌ Le format de la couleur est invalide. Utilisez un code hexadécimal comme `#FF5733`.",
             ephemeral=True,
         )
         return
-    existing_message = None
-    async for message in profile_channel.history(limit=100):
-        if (
-            message.author == bot.user
-            and message.embeds
-            and message.embeds[0].title
-            == f"Profil du groupe : {author_group_role.name[7:]}"
-        ):
-            existing_message = message
-            break
+
+    guild = interaction.guild
+    role_name = f"groupe {nom}"
+
+    if discord.utils.get(guild.roles, name=role_name):
+        await interaction.followup.send(
+            f"❌ Un groupe nommé '{nom}' existe déjà.", ephemeral=True
+        )
+        return
+
+    # Création du rôle
+    nouveau_role = await guild.create_role(
+        name=role_name,
+        colour=couleur_obj,
+        reason=f"Création du groupe par {interaction.user}",
+    )
+
+    # Création de la catégorie et des salons
+    categorie = await guild.create_category(f"Territoire {nom}")
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        nouveau_role: discord.PermissionOverwrite(
+            read_messages=True, send_messages=True, connect=True, speak=True
+        ),
+        guild.me: discord.PermissionOverwrite(
+            read_messages=True, send_messages=True
+        ),  # Le bot doit pouvoir voir les salons
+    }
+    nom_slug = nom.lower().replace(" ", "-")
+    await categorie.create_text_channel(f"discussion-{nom_slug}", overwrites=overwrites)
+    await categorie.create_voice_channel(f"vocal-{nom_slug}", overwrites=overwrites)
+    await categorie.create_text_channel(f"gestion-{nom_slug}", overwrites=overwrites)
+
+    await interaction.followup.send(
+        f"✅ Le groupe '{nom}' a été créé avec succès !", ephemeral=True
+    )
+    await log_action(
+        guild,
+        "Création de Groupe",
+        f"Le groupe **{nom}** a été créé par {interaction.user.mention}.",
+        color=discord.Color.green(),
+    )
+    await log_action(
+        guild,
+        "Création de Groupe",
+        f"Le groupe **{nom}** a été créé par {interaction.user.mention}.",
+        color=discord.Color.green(),
+    )
+
+
+@bot.tree.command(
+    name="join", description="Rejoins un groupe existant s'il n'est pas complet."
+)
+@app_commands.describe(nom_groupe="Le nom exact du groupe que tu veux rejoindre.")
+async def join(interaction: discord.Interaction, nom_groupe: str):
+    member = interaction.user
+    guild = interaction.guild
+    role_demande = discord.utils.get(guild.roles, name=f"groupe {nom_groupe}")
+
+    if not role_demande:
+        await interaction.response.send_message(
+            f"❌ Le groupe '{nom_groupe}' n'existe pas.", ephemeral=True
+        )
+        return
+
+    if len(role_demande.members) >= 10:
+        await interaction.response.send_message(
+            "❌ Ce groupe est déjà complet (10 membres).", ephemeral=True
+        )
+        return
+
+    # Vérifier si l'utilisateur est déjà dans un groupe
+    ancien_role = discord.utils.find(
+        lambda r: r.name.startswith("groupe "), member.roles
+    )
+    if ancien_role:
+        await member.remove_roles(ancien_role, reason="Changement de groupe")
+
+    await member.add_roles(role_demande, reason=f"A rejoint le groupe {nom_groupe}")
+    await interaction.response.send_message(
+        f"✅ Tu as bien rejoint le groupe **{nom_groupe}** !", ephemeral=True
+    )
+
+
+@bot.tree.command(name="leave", description="Quitte votre groupe actuel.")
+async def leave(interaction: discord.Interaction):
+    member = interaction.user
+    guild = interaction.guild
+    role_groupe = discord.utils.find(
+        lambda r: r.name.startswith("groupe "), member.roles
+    )
+
+    if not role_groupe:
+        await interaction.response.send_message(
+            "❌ Tu ne fais partie d'aucun groupe.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    await member.remove_roles(role_groupe, reason="A quitté le groupe")
+    await interaction.followup.send(
+        f"✅ Tu as quitté le groupe **{role_groupe.name[7:]}**.", ephemeral=True
+    )
+
+    # Vérifier si le groupe est maintenant vide
+    if len(role_groupe.members) == 0:
+        await log_action(
+            guild,
+            "Nettoyage de Groupe",
+            f"Le groupe **{role_groupe.name[7:]}** est vide et va être supprimé.",
+            color=discord.Color.orange(),
+        )
+
+        # Suppression des canaux et de la catégorie
+        nom_groupe_original = role_groupe.name[7:]
+        nom_groupe_slug = nom_groupe_original.lower().replace(" ", "-")
+
+        categorie = discord.utils.get(
+            guild.categories, name=f"Territoire {nom_groupe_original}"
+        )
+        if categorie:
+            for channel in categorie.channels:
+                try:
+                    await channel.delete(reason="Groupe vide")
+                except discord.HTTPException as e:
+                    print(f"Erreur lors de la suppression du salon {channel.name}: {e}")
+            try:
+                await categorie.delete(reason="Groupe vide")
+            except discord.HTTPException as e:
+                print(
+                    f"Erreur lors de la suppression de la catégorie {categorie.name}: {e}"
+                )
+
+        # Suppression du rôle
+        try:
+            await role_groupe.delete(reason="Groupe vide")
+            await log_action(
+                guild,
+                "Groupe Supprimé",
+                f"Le groupe **{nom_groupe_original}** a été supprimé avec succès.",
+                color=discord.Color.red(),
+            )
+        except discord.HTTPException as e:
+            print(f"Erreur lors de la suppression du rôle {role_groupe.name}: {e}")
+
+
+@bot.tree.command(
+    name="recommander",
+    description="Lance un vote pour faire entrer un nouveau membre dans la meute.",
+)
+@app_commands.describe(membre="Le membre que tu souhaites recommander.")
+@app_commands.checks.has_role(EVENEMENT_ROLE_NAME)
+async def recommander(interaction: discord.Interaction, membre: discord.Member):
+    data = load_data(recommendations_db)
+    server_id = str(interaction.guild.id)
+    if server_id not in data:
+        data[server_id] = {}
+
+    if str(membre.id) in data[server_id]:
+        await interaction.response.send_message(
+            "Ce membre est déjà en cours de validation.", ephemeral=True
+        )
+        return
+
+    data[server_id][str(membre.id)] = {
+        "recommender_id": interaction.user.id,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+    save_data(data, recommendations_db)
+
+    assemblee_channel = discord.utils.get(
+        interaction.guild.text_channels, name=ASSEMBLEE_CHANNEL_NAME
+    )
+    if not assemblee_channel:
+        await interaction.response.send_message(
+            f"Le salon `{ASSEMBLEE_CHANNEL_NAME}` est introuvable.", ephemeral=True
+        )
+        return
+
     embed = discord.Embed(
-        title=f"Profil du groupe : {author_group_role.name[7:]}",
-        description=description,
-        color=author_group_role.color,
+        title="Nouvelle recommandation de membre",
+        description=f"{interaction.user.mention} a recommandé {membre.mention} pour rejoindre la meute.",
+        color=discord.Color.blue(),
     )
-    members_list = "\n".join(
-        [f"• {member.display_name}" for member in author_group_role.members]
+    embed.set_footer(text=f"ID du membre: {membre.id}")
+    msg = await assemblee_channel.send(embed=embed)
+    await msg.add_reaction("✅")
+
+    await interaction.response.send_message(
+        f"Votre recommandation pour {membre.mention} a été soumise au vote dans {assemblee_channel.mention}.",
+        ephemeral=True,
     )
-    embed.add_field(name="Membres", value=members_list or "Aucun membre", inline=False)
-    embed.set_footer(text=f"Profil mis à jour par {ctx.author.display_name}")
-    if existing_message:
-        await existing_message.edit(embed=embed)
-    else:
-        await profile_channel.send(embed=embed)
-    await ctx.send("✅ Profil de groupe mis à jour !", ephemeral=True, delete_after=10)
-    await ctx.message.delete()
+    await log_action(
+        interaction.guild,
+        "Recommandation",
+        f"{interaction.user.mention} a recommandé {membre.mention}.",
+        color=discord.Color.blue(),
+    )
 
 
-# --- Commandes de gestion des événements ---
+# --- Modal pour le profil de groupe ---
+class GroupProfileModal(Modal, title="Mise à jour du profil de groupe"):
+    description = TextInput(
+        label="Description de votre groupe",
+        style=discord.TextStyle.paragraph,
+        placeholder="Décrivez ici la philosophie de votre groupe, vos jeux préférés, etc.",
+        required=True,
+        max_length=1024,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        profile_channel = discord.utils.get(
+            interaction.guild.text_channels, name=PROFILES_CHANNEL_NAME
+        )
+        if not profile_channel:
+            await interaction.followup.send(
+                f"❌ Le salon `{PROFILES_CHANNEL_NAME}` est introuvable.",
+                ephemeral=True,
+            )
+            return
+
+        author_group_role = discord.utils.find(
+            lambda r: r.name.startswith("groupe "), interaction.user.roles
+        )
+        if not author_group_role:
+            await interaction.followup.send(
+                "❌ Vous devez faire partie d'un groupe pour utiliser cette commande.",
+                ephemeral=True,
+            )
+            return
+
+        # Chercher un message existant pour le mettre à jour
+        existing_message = None
+        async for message in profile_channel.history(limit=100):
+            if (
+                message.author == bot.user
+                and message.embeds
+                and message.embeds[0].footer.text
+                == f"ID du groupe : {author_group_role.id}"
+            ):
+                existing_message = message
+                break
+
+        embed = discord.Embed(
+            title=f"Profil du groupe : {author_group_role.name[7:]}",
+            description=self.description.value,
+            color=author_group_role.color,
+        )
+        members_list = "\n".join(
+            [f"• {member.display_name}" for member in author_group_role.members]
+        )
+        embed.add_field(
+            name="Membres", value=members_list or "Aucun membre", inline=False
+        )
+        embed.set_footer(text=f"ID du groupe : {author_group_role.id}")
+
+        if existing_message:
+            await existing_message.edit(embed=embed)
+        else:
+            await profile_channel.send(embed=embed)
+
+        await interaction.followup.send(
+            "✅ Profil de groupe mis à jour !", ephemeral=True
+        )
+
+
+@bot.tree.command(
+    name="profil",
+    description="Définit ou met à jour le message de présentation de votre groupe.",
+)
+@app_commands.checks.has_role(EVENEMENT_ROLE_NAME)
+async def profil(interaction: discord.Interaction):
+    await interaction.response.send_modal(GroupProfileModal())
+
+
+# --- Modal pour proposer un événement ---
 class ProposeEventModal(Modal, title="Proposer un nouvel événement"):
     category = TextInput(
         label="Catégorie",
@@ -204,7 +429,7 @@ class ProposeEventModal(Modal, title="Proposer un nouvel événement"):
         required=True,
     )
     description = TextInput(
-        label="Description (optionnel)",
+        label="Description",
         style=discord.TextStyle.paragraph,
         required=False,
         max_length=500,
@@ -219,15 +444,17 @@ class ProposeEventModal(Modal, title="Proposer un nouvel événement"):
                 "❌ Vous devez faire partie d'un groupe.", ephemeral=True
             )
             return
-        gestion_slug = group_role.name[len("groupe ") :].lower().replace(" ", "-")
+
+        gestion_slug = group_role.name[7:].lower().replace(" ", "-")
         gestion_channel = discord.utils.get(
             interaction.guild.text_channels, name=f"gestion-{gestion_slug}"
         )
         if not gestion_channel:
             await interaction.response.send_message(
-                "❌ Salon de gestion introuvable.", ephemeral=True
+                "❌ Salon de gestion introuvable pour votre groupe.", ephemeral=True
             )
             return
+
         embed = discord.Embed(
             title=f"Nouvelle proposition : {self.event_title.value}",
             color=group_role.color,
@@ -241,9 +468,11 @@ class ProposeEventModal(Modal, title="Proposer un nouvel événement"):
             embed.add_field(
                 name="Description", value=self.description.value, inline=False
             )
+
         msg = await gestion_channel.send(embed=embed)
         await msg.add_reaction("✅")
         await msg.add_reaction("❌")
+
         await interaction.response.send_message(
             f"✅ Proposition envoyée dans {gestion_channel.mention} !", ephemeral=True
         )
@@ -258,50 +487,67 @@ class ProposeEventModal(Modal, title="Proposer un nouvel événement"):
     name="proposer", description="Ouvre une fenêtre pour proposer un nouvel événement."
 )
 @app_commands.checks.has_role(EVENEMENT_ROLE_NAME)
-async def proposer_slash(interaction: discord.Interaction):
-    """Ouvre une fenêtre pour proposer un nouvel événement."""
+async def proposer(interaction: discord.Interaction):
     await interaction.response.send_modal(ProposeEventModal())
 
 
-@bot.command(name="noter")
-@commands.has_role(EVENEMENT_ROLE_NAME)
-async def rate_event(ctx, event_id: str, rating: int):
-    """Note un événement proposé. `!noter <ID de l'événement> <note de 1 à 5>`."""
-    if not (1 <= rating <= 5):
-        await ctx.send("❌ La note doit être comprise entre 1 et 5.")
-        return
-
+@bot.tree.command(name="noter", description="Note un événement proposé de 1 à 5.")
+@app_commands.describe(
+    id_evenement="L'ID du message de l'événement à noter.", note="Votre note de 1 à 5."
+)
+@app_commands.choices(
+    note=[
+        app_commands.Choice(name="⭐ (1/5)", value=1),
+        app_commands.Choice(name="⭐⭐ (2/5)", value=2),
+        app_commands.Choice(name="⭐⭐⭐ (3/5)", value=3),
+        app_commands.Choice(name="⭐⭐⭐⭐ (4/5)", value=4),
+        app_commands.Choice(name="⭐⭐⭐⭐⭐ (5/5)", value=5),
+    ]
+)
+@app_commands.checks.has_role(EVENEMENT_ROLE_NAME)
+async def noter(
+    interaction: discord.Interaction, id_evenement: str, note: app_commands.Choice[int]
+):
     events_data = load_data(events_db)
-    server_id = str(ctx.guild.id)
+    server_id = str(interaction.guild.id)
 
-    if server_id not in events_data or event_id not in events_data[server_id]:
-        await ctx.send("❌ Cet ID d'événement n'existe pas ou n'est plus valide.")
+    if server_id not in events_data or id_evenement not in events_data[server_id]:
+        await interaction.response.send_message(
+            "❌ Cet ID d'événement n'existe pas ou n'est plus valide.", ephemeral=True
+        )
         return
 
-    # Enregistrer la note
-    event = events_data[server_id][event_id]
-    event["ratings"][str(ctx.author.id)] = rating
-
-    # Recalculer la moyenne
+    event = events_data[server_id][id_evenement]
+    event["ratings"][str(interaction.user.id)] = note.value
     total_ratings = sum(event["ratings"].values())
     event["average_rating"] = round(total_ratings / len(event["ratings"]), 2)
-
     save_data(events_data, events_db)
-    await ctx.send(
-        f'✅ Votre note de **{rating}/5** a bien été prise en compte pour l\'événement "{event["title"]}". Nouvelle note moyenne : **{event["average_rating"]}**.'
+
+    await interaction.response.send_message(
+        f'✅ Votre note de **{note.value}/5** a bien été prise en compte pour l\'événement "{event["title"]}".',
+        ephemeral=True,
     )
 
 
-# --- Commande de classement ---
-@bot.command(name="classement")
-@commands.has_permissions(manage_messages=True)
-async def leaderboard_command(ctx):
-    await ctx.send("Mise à jour des classements...", ephemeral=True)
-    channel = discord.utils.get(ctx.guild.text_channels, name=LEADERBOARD_CHANNEL_NAME)
+@bot.tree.command(
+    name="classement",
+    description="Force la mise à jour et l'affichage des classements.",
+)
+@app_commands.checks.has_permissions(manage_messages=True)
+async def classement(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    channel = discord.utils.get(
+        interaction.guild.text_channels, name=LEADERBOARD_CHANNEL_NAME
+    )
     if channel:
         await channel.purge(limit=5)
-        embed = await generate_leaderboard_embed(ctx.guild)
+        embed = await generate_leaderboard_embed(interaction.guild)
         await channel.send(embed=embed)
+        await interaction.followup.send("✅ Classements mis à jour.", ephemeral=True)
+    else:
+        await interaction.followup.send(
+            f"❌ Le salon `{LEADERBOARD_CHANNEL_NAME}` est introuvable.", ephemeral=True
+        )
 
 
 # =================================================================================
@@ -315,14 +561,20 @@ async def check_recommendations():
         server_id = str(guild.id)
         if server_id not in data:
             continue
+
         member_role = discord.utils.get(guild.roles, name=EVENEMENT_ROLE_NAME)
         if not member_role:
             continue
+
         total_members = len(member_role.members)
         majority_needed = (total_members // 2) + 1
         assemblee_channel = discord.utils.get(
             guild.text_channels, name=ASSEMBLEE_CHANNEL_NAME
         )
+        registre_channel = discord.utils.get(
+            guild.text_channels, name=REGISTRE_CHANNEL_NAME
+        )
+
         for member_id_str, info in list(data[server_id].items()):
             try:
                 async for message in assemblee_channel.history(limit=100):
@@ -331,53 +583,32 @@ async def check_recommendations():
                         and str(member_id_str) in message.embeds[0].footer.text
                     ):
                         reaction = discord.utils.get(message.reactions, emoji="✅")
-                        if reaction:
-                            voters = {
-                                user.id
-                                async for user in reaction.users()
-                                if not user.bot and member_role in user.roles
-                            }
-                            if len(voters) >= majority_needed:
-                                new_member = guild.get_member(int(member_id_str))
-                                recommender = guild.get_member(info["recommender_id"])
-                                if new_member and recommender:
-                                    await new_member.add_roles(member_role)
-                                    await assemblee_channel.send(
-                                        f"🎉 La recommandation pour {new_member.mention} a été validée !"
+                        if reaction and reaction.count >= majority_needed:
+                            new_member = guild.get_member(int(member_id_str))
+                            recommender = guild.get_member(info["recommender_id"])
+                            if new_member and recommender:
+                                await new_member.add_roles(member_role)
+                                await assemblee_channel.send(
+                                    f"🎉 La recommandation pour {new_member.mention} a été validée !"
+                                )
+
+                                # Ajout au registre public
+                                if registre_channel:
+                                    await registre_channel.send(
+                                        f"🐺 Bienvenue à {new_member.mention}, qui a rejoint la meute sur recommandation de {recommender.mention}."
                                     )
-                                    await log_action(
-                                        guild,
-                                        "Membre Validé",
-                                        f"{new_member.mention} a été validé sur recommandation de {recommender.mention}.",
-                                        color=discord.Color.green(),
-                                    )
-                                    await message.delete()
-                                    del data[server_id][member_id_str]
+
+                                await log_action(
+                                    guild,
+                                    "Membre Validé",
+                                    f"{new_member.mention} a été validé sur recommandation de {recommender.mention}.",
+                                    color=discord.Color.green(),
+                                )
+                                await message.delete()
+                                del data[server_id][member_id_str]
             except Exception as e:
-                print(f"Erreur check_recommendations: {e}")
+                print(f"Erreur dans check_recommendations: {e}")
         save_data(data, recommendations_db)
-
-
-@tasks.loop(hours=1)
-async def update_recommenders_list():
-    await bot.wait_until_ready()
-    for guild in bot.guilds:
-        channel = discord.utils.get(guild.text_channels, name=RECOMMENDERS_CHANNEL_NAME)
-        role = discord.utils.get(guild.roles, name=EVENEMENT_ROLE_NAME)
-        if not channel or not role:
-            continue
-        await channel.purge(limit=10)
-        members_with_role = role.members
-        embed = discord.Embed(
-            title="Membres pouvant vous recommander",
-            description="Voici la liste des membres qui peuvent utiliser `!recommander`.",
-            color=discord.Color.green(),
-        )
-        member_list_str = "\n".join(
-            [f"• {member.mention}" for member in members_with_role]
-        )
-        embed.description += f"\n\n{member_list_str}"
-        await channel.send(embed=embed)
 
 
 @tasks.loop(hours=1)
@@ -393,14 +624,16 @@ async def check_group_votes():
 
         for channel in guild.text_channels:
             if channel.name.startswith("gestion-"):
-                group_name = channel.name.replace("gestion-", "groupe ")
-                group_role = discord.utils.get(guild.roles, name=group_name)
+                group_name_slug = channel.name[len("gestion-") :]
+                group_role = discord.utils.find(
+                    lambda r: r.name[7:].lower().replace(" ", "-") == group_name_slug,
+                    guild.roles,
+                )
                 if not group_role or not group_role.members:
                     continue
 
                 member_count = len(group_role.members)
                 majority_approve = (member_count // 2) + 1
-                majority_reject = (member_count // 2) + 1
 
                 try:
                     async for message in channel.history(limit=50):
@@ -410,74 +643,96 @@ async def check_group_votes():
                         yes_reac = discord.utils.get(message.reactions, emoji="✅")
                         no_reac = discord.utils.get(message.reactions, emoji="❌")
 
-                        if not yes_reac and not no_reac:
+                        if not yes_reac:
                             continue
 
-                        voters_yes = {
-                            user.id
-                            async for user in yes_reac.users()
-                            if group_role in user.roles
-                        }
-                        voters_no = {
-                            user.id
-                            async for user in no_reac.users()
-                            if group_role in user.roles
-                        }
-
-                        if len(voters_yes) >= majority_approve:
+                        if yes_reac.count >= majority_approve:
                             # Proposition acceptée
-                            event_title = message.embeds[0].description.strip("*")
-                            categorie_field = discord.utils.get(
+                            event_title = message.embeds[0].title[
+                                len("Nouvelle proposition : ") :
+                            ]
+                            category_field = discord.utils.get(
                                 message.embeds[0].fields, name="Catégorie"
                             )
-                            event_categorie = (
-                                categorie_field.value if categorie_field else "[Autre]"
+                            event_category = (
+                                category_field.value if category_field else "[Autre]"
                             )
 
-                            # Ajout à la base de données des événements
                             events_data = load_data(events_db)
                             server_id = str(guild.id)
                             if server_id not in events_data:
                                 events_data[server_id] = {}
+
                             event_id = str(message.id)
                             events_data[server_id][event_id] = {
                                 "title": event_title,
-                                "category": event_categorie,  # <-- ON SAUVEGARDE LA CATÉGORIE
+                                "category": event_category,
                                 "proposer_group": group_role.name,
                                 "ratings": {},
                                 "average_rating": 0,
+                                "status": "active",
                             }
                             save_data(events_data, events_db)
 
-                            # Annonce dans le salon des propositions
                             embed = discord.Embed(
-                                title="Nouvel événement disponible aux votes",
-                                description=f"**{event_title}**",
+                                title=f"Nouvel événement : {event_category} {event_title}",
+                                description=f"Proposé par le groupe **{group_role.name[7:]}**.",
                                 color=discord.Color.green(),
                             )
                             embed.set_footer(text=f"ID de l'événement : {event_id}")
                             await proposals_channel.send(
-                                f"Le groupe *{group_role.name}* a validé une nouvelle proposition ! Utilisez `!noter {event_id} <note de 1 à 5>` pour donner votre avis.",
+                                f"Une nouvelle proposition a été validée ! Utilisez `/noter id_evenement:{event_id}` pour donner votre avis.",
                                 embed=embed,
                             )
                             await message.delete()
 
-                        elif len(voters_no) >= majority_reject:
+                        elif no_reac and no_reac.count >= majority_approve:
                             # Proposition rejetée
                             await channel.send(
-                                f'La proposition "{message.embeds[0].description}" a été rejetée par le groupe.',
-                                delete_after=30,
+                                f'La proposition "{message.embeds[0].title}" a été rejetée par le groupe.',
+                                delete_after=60,
                             )
                             await message.delete()
                 except Exception as e:
-                    print(f"Erreur vérification vote groupe {channel.name}: {e}")
+                    print(f"Erreur dans check_group_votes pour {channel.name}: {e}")
+
+
+# --- Système de vote hebdomadaire (corrigé) ---
+class WeeklyVoteView(View):
+    def __init__(self, options, vote_id):
+        super().__init__(timeout=172800)  # Timeout de 48h
+        self.vote_id = vote_id
+        self.add_item(self.create_select(options))
+
+    def create_select(self, options):
+        select = Select(
+            placeholder="Choisissez l'événement de la semaine",
+            options=options,
+            custom_id=f"weekly_vote_select_{self.vote_id}",
+        )
+        select.callback = self.select_callback
+        return select
+
+    async def select_callback(self, interaction: discord.Interaction):
+        votes_data = load_data(weekly_votes_db)
+        if self.vote_id not in votes_data:
+            votes_data[self.vote_id] = {}
+
+        # Enregistre le vote de l'utilisateur
+        votes_data[self.vote_id][str(interaction.user.id)] = self.children[0].values[0]
+        save_data(votes_data, weekly_votes_db)
+
+        await interaction.response.send_message(
+            "✅ Votre vote a bien été pris en compte !", ephemeral=True
+        )
 
 
 @tasks.loop(hours=24)
 async def weekly_vote_announcement():
     """Annonce le début du vote pour l'événement de la semaine."""
     # Déclenché le Mercredi à 18h
-    if datetime.now().weekday() == 2 and datetime.now().hour == 18:
+    now = datetime.now()
+    if now.weekday() == 2 and now.hour == 18:
         for guild in bot.guilds:
             assemblee_channel = discord.utils.get(
                 guild.text_channels, name=ASSEMBLEE_CHANNEL_NAME
@@ -486,34 +741,27 @@ async def weekly_vote_announcement():
                 continue
 
             events_data = load_data(events_db).get(str(guild.id), {})
-            last_event_data = load_data(last_event_db).get(str(guild.id), {})
-
-            # Filtrer l'événement de la semaine précédente
             eligible_events = {
-                k: v for k, v in events_data.items() if k != last_event_data.get("id")
+                k: v for k, v in events_data.items() if v.get("status") == "active"
             }
-
             if not eligible_events:
                 await assemblee_channel.send(
                     "Il n'y a aucun nouvel événement à voter pour cette semaine."
                 )
                 return
 
-            # Trier par note moyenne
             sorted_events = sorted(
                 eligible_events.items(),
                 key=lambda item: item[1]["average_rating"],
                 reverse=True,
             )
-
             options = [
                 discord.SelectOption(
-                    # --- AJOUT : On affiche la catégorie dans le label ---
                     label=f"{event.get('category', '[Autre]')} {event['title']}"[:100],
                     description=f"Note: {event['average_rating']}/5",
                     value=event_id,
                 )
-                for event_id, event in sorted_events
+                for event_id, event in sorted_events[:25]  # Limite de 25 options
             ]
 
             if not options:
@@ -522,24 +770,13 @@ async def weekly_vote_announcement():
                 )
                 return
 
-            class WeeklyVoteSelect(Select):
-                def __init__(self):
-                    super().__init__(
-                        placeholder="Choisissez l'événement de la semaine",
-                        options=options,
-                    )
+            # Utilise l'ID du message comme ID de vote unique
+            temp_msg = await assemblee_channel.send("Préparation du vote...")
+            vote_id = str(temp_msg.id)
 
-                async def callback(self, interaction: discord.Interaction):
-                    # Cette partie pourrait être étendue pour enregistrer les votes si nécessaire
-                    await interaction.response.send_message(
-                        f"Votre vote pour l'événement avec l'ID `{self.values[0]}` a été enregistré !",
-                        ephemeral=True,
-                    )
-
-            view = View()
-            view.add_item(WeeklyVoteSelect())
-            await assemblee_channel.send(
-                "🗳️ **Vote de la semaine !**\nChoisissez l'événement de la semaine prochaine parmi les propositions (triées par popularité) :",
+            view = WeeklyVoteView(options, vote_id)
+            await temp_msg.edit(
+                content="🗳️ **Vote de la semaine !**\nChoisissez l'événement de la semaine prochaine parmi les propositions :",
                 view=view,
             )
 
@@ -547,8 +784,9 @@ async def weekly_vote_announcement():
 @tasks.loop(hours=24)
 async def announce_winner():
     """Annonce l'événement gagnant de la semaine."""
-    # Déclenché le Vendredi à 20h
-    if datetime.now().weekday() == 4 and datetime.now().hour == 20:
+    # Déclenché le Vendredi à 15h
+    now = datetime.now()
+    if now.weekday() == 4 and now.hour == 15:
         for guild in bot.guilds:
             assemblee_channel = discord.utils.get(
                 guild.text_channels, name=ASSEMBLEE_CHANNEL_NAME
@@ -556,54 +794,51 @@ async def announce_winner():
             if not assemblee_channel:
                 continue
 
-            # Simuler la récupération du gagnant (idéalement, il faudrait un vrai système de comptage des votes du Select Menu)
-            # Pour cet exemple, on prend le plus populaire qui n'était pas le dernier événement.
-            events_data = load_data(events_db).get(str(guild.id), {})
-            last_event_data = load_data(last_event_db).get(str(guild.id), {})
-
-            eligible_events = {
-                k: v for k, v in events_data.items() if k != last_event_data.get("id")
-            }
-            if not eligible_events:
+            votes_data = load_data(weekly_votes_db)
+            if not votes_data:
                 await assemblee_channel.send(
-                    "Aucun événement n'a été sélectionné cette semaine."
+                    "Aucun vote n'a été enregistré cette semaine."
                 )
                 return
 
-            winner_id, winner_info = max(
-                eligible_events.items(), key=lambda item: item[1]["average_rating"]
-            )
+            # On prend le dernier vote lancé
+            latest_vote_id = sorted(votes_data.keys())[-1]
+            latest_votes = votes_data[latest_vote_id]
+
+            if not latest_votes:
+                await assemblee_channel.send("Personne n'a voté cette semaine !")
+                return
+
+            # Comptage des votes
+            vote_counts = Counter(latest_votes.values())
+            winner_id, _ = vote_counts.most_common(1)[0]
+
+            events_data = load_data(events_db)
+            server_id = str(guild.id)
+            winner_info = events_data.get(server_id, {}).get(winner_id)
+
+            if not winner_info:
+                print(
+                    f"Erreur: L'ID de l'événement gagnant {winner_id} est introuvable."
+                )
+                continue
 
             # Annonce et mise à jour
             winner_category = winner_info.get("category", "[Autre]")
-            announcement_text = f"🎉 L'événement de la semaine est : **{winner_category} {winner_info['title']}** ! Proposé par le groupe *{winner_info['proposer_group']}*."
+            announcement_text = f"🎉 L'événement de la semaine est : **{winner_category} {winner_info['title']}** ! Proposé par le groupe *{winner_info['proposer_group'][7:]}*."
             announcement_message = await assemblee_channel.send(announcement_text)
 
-            # --- AJOUT : Création d'un fil de discussion pour le feedback ---
+            # Création du fil de discussion
             try:
                 thread_name = f"Feedback sur - {winner_info['title']}"[:100]
-                # Durée d'archivage automatique de 3 jours (4320 minutes)
-                feedback_thread = await announcement_message.create_thread(
+                await announcement_message.create_thread(
                     name=thread_name, auto_archive_duration=4320
-                )
-                await feedback_thread.send(
-                    "Partagez ici vos retours, avis et meilleures captures d'écran de l'événement ! 📸"
-                )
-            except discord.Forbidden:
-                await assemblee_channel.send(
-                    "*(Je n'ai pas la permission de créer un fil de discussion pour le feedback.)*"
                 )
             except Exception as e:
                 print(f"Erreur lors de la création du fil de discussion : {e}")
-            # Sauvegarder comme dernier événement
-            save_data(
-                {"id": winner_id, "title": winner_info["title"]},
-                f"{guild.id}_{last_event_db}",
-            )
 
-            # Mettre à jour le score du groupe
+            # Mise à jour du score du groupe
             group_scores = load_data(group_scores_db)
-            server_id = str(guild.id)
             if server_id not in group_scores:
                 group_scores[server_id] = {}
             group_name = winner_info["proposer_group"]
@@ -612,23 +847,35 @@ async def announce_winner():
             )
             save_data(group_scores, group_scores_db)
 
-            # Supprimer l'événement de la liste des propositions actives
-            events_data[winner_id]["status"] = "past"
+            # Marquer l'événement comme passé
+            events_data[server_id][winner_id]["status"] = "past"
             save_data(events_data, events_db)
+
+            # Nettoyer l'ancien vote
+            del votes_data[latest_vote_id]
+            save_data(votes_data, weekly_votes_db)
 
 
 @tasks.loop(hours=24)
 async def monthly_intercommunity_event():
-    """Organise l'événement mensuel."""
-    # Déclenché le premier jour du mois à 12h
-    if datetime.now().day == 1 and datetime.now().hour == 12:
+    """Gère l'événement mensuel et le rôle du gagnant."""
+    now = datetime.now()
+    if now.day == 1 and now.hour == 12:
         for guild in bot.guilds:
             group_scores = load_data(group_scores_db).get(str(guild.id), {})
             if not group_scores:
                 continue
 
-            winning_group = max(group_scores, key=group_scores.get)
-            score = group_scores[winning_group]
+            # Retirer le rôle au(x) gagnant(s) précédent(s)
+            winner_role = discord.utils.get(guild.roles, name=MONTHLY_WINNER_ROLE_NAME)
+            if winner_role:
+                for member in winner_role.members:
+                    await member.remove_roles(winner_role, reason="Fin du mois")
+
+            # Déterminer le nouveau gagnant
+            winning_group_name = max(group_scores, key=group_scores.get)
+            score = group_scores[winning_group_name]
+            winning_group_role = discord.utils.get(guild.roles, name=winning_group_name)
 
             assemblee_channel = discord.utils.get(
                 guild.text_channels, name=ASSEMBLEE_CHANNEL_NAME
@@ -636,148 +883,19 @@ async def monthly_intercommunity_event():
             if assemblee_channel:
                 embed = discord.Embed(
                     title="🏆 Soirée Inter-Communautaire du Mois ! 🏆",
-                    description=f"Ce mois-ci, le groupe **{winning_group}** est à l'honneur avec un score de **{score}** événements validés !\n\nIls organiseront la soirée spéciale. Préparez-vous !",
+                    description=f"Ce mois-ci, le groupe **{winning_group_name[7:]}** est à l'honneur avec un score de **{score}** événements validés !\n\nIls organiseront la soirée spéciale et reçoivent le rôle honorifique.",
                     color=discord.Color.gold(),
                 )
                 await assemblee_channel.send(embed=embed)
 
+            # Attribuer le rôle au nouveau gagnant
+            if winning_group_role and winner_role:
+                for member in winning_group_role.members:
+                    await member.add_roles(winner_role, reason="Gagnant du mois")
 
-@bot.command()
-@commands.has_permissions(manage_roles=True)
-async def groupe(ctx, nom: str, couleur: discord.Colour):
-    member = ctx.author
-    guild = ctx.guild
-
-    if any(role.name.startswith("groupe ") for role in member.roles):
-        await ctx.send(
-            "Tu fais déjà partie d'un groupe. Impossible d'en créer un autre."
-        )
-        return
-
-    # Créer un nouveau rôle avec la couleur donnée
-    try:
-        nouveau_role = await guild.create_role(name=f"groupe {nom}", colour=couleur)
-    except discord.Forbidden:
-        await ctx.send("Je n'ai pas la permission de créer un rôle.")
-        return
-    except discord.HTTPException as e:
-        await ctx.send(f"Erreur lors de la création du rôle : {e}")
-        return
-
-    # Ajouter le rôle au membre qui a créé le groupe
-    await member.add_roles(nouveau_role)
-
-    # Créer une catégorie pour organiser les salons du groupe
-    categorie = await guild.create_category(f"Groupe {nom}")
-
-    # Permissions générales : personne sauf groupe et admins ne voit rien
-    overwrites_base = {
-        guild.default_role: discord.PermissionOverwrite(
-            read_messages=False, send_messages=False, connect=False
-        ),
-    }
-
-    # Permissions du groupe sur les salons "groupe" et "vocal"
-    overwrites_groupe = overwrites_base.copy()
-    overwrites_groupe.update(
-        {
-            nouveau_role: discord.PermissionOverwrite(
-                read_messages=True, send_messages=True, connect=True, speak=True
-            ),
-        }
-    )
-
-    # Permissions du groupe sur le salon "Gestion" (lecture seule)
-    overwrites_gestion = overwrites_base.copy()
-    overwrites_gestion.update(
-        {
-            nouveau_role: discord.PermissionOverwrite(
-                read_messages=True, send_messages=False
-            ),
-        }
-    )
-
-    # Ajout des admins sur tous les salons
-    for role in guild.roles:
-        if role.permissions.administrator or role.permissions.manage_channels:
-            overwrites_groupe[role] = discord.PermissionOverwrite(
-                read_messages=True, send_messages=True, connect=True, speak=True
-            )
-            overwrites_gestion[role] = discord.PermissionOverwrite(
-                read_messages=True, send_messages=True
-            )
-
-    # Création des salons
-    vocal = await guild.create_voice_channel(
-        f"vocal {nom}", category=categorie, overwrites=overwrites_groupe
-    )
-    texte_groupe = await guild.create_text_channel(
-        f"groupe {nom}", category=categorie, overwrites=overwrites_groupe
-    )
-    gestion = await guild.create_text_channel(
-        f"Gestion {nom}", category=categorie, overwrites=overwrites_gestion
-    )
-
-    await ctx.send(
-        f"Groupe '{nom}' créé avec succès ! Rôle, salons vocaux et textuels sont prêts."
-    )
-
-
-@bot.command()
-async def leave(ctx):
-    member = ctx.author
-    # Trouve le rôle de groupe actuel
-    role_groupe = None
-    for role in member.roles:
-        if role.name.startswith("groupe "):
-            role_groupe = role
-            break
-
-    if role_groupe is None:
-        await ctx.send("Tu ne fais partie d'aucun groupe.")
-        return
-
-    await member.remove_roles(role_groupe)
-    await ctx.send(f"Tu as quitté le groupe **{role_groupe.name[7:]}**.")
-
-
-@bot.command()
-async def join(ctx, *, nom_groupe: str):
-    member = ctx.author
-    guild = ctx.guild
-
-    # Cherche le rôle du groupe demandé (nom exact après "groupe ")
-    role_demande = discord.utils.get(guild.roles, name=f"groupe {nom_groupe}")
-
-    if role_demande is None:
-        await ctx.send(f"Le groupe '{nom_groupe}' n'existe pas.")
-        return
-
-    # Vérifie le nombre de membres dans ce groupe
-    membres_groupe = [m for m in guild.members if role_demande in m.roles]
-    if len(membres_groupe) >= 10:
-        await ctx.send("Ce groupe est complet (10 membres max).")
-        return
-
-    # Trouve l'ancien rôle de groupe de l'utilisateur
-    ancien_role = None
-    for role in member.roles:
-        if role.name.startswith("groupe "):
-            ancien_role = role
-            break
-
-    # Enlève l'ancien groupe si existe
-    if ancien_role is not None:
-        await member.remove_roles(ancien_role)
-
-    # Ajoute le nouveau rôle
-    await member.add_roles(role_demande)
-    await ctx.send(f"Tu as rejoint le groupe **{nom_groupe}**.")
-
-
-@bot.command()
-async def ping(ctx):
-    await ctx.send("🏓 Pong!")
+            # Réinitialiser les scores pour le nouveau mois
+            group_scores[str(guild.id)] = {}
+            save_data(group_scores, group_scores_db)
 
 
 @tasks.loop(hours=6)
@@ -792,14 +910,17 @@ async def update_leaderboard():
 
 
 async def generate_leaderboard_embed(guild: discord.Guild):
+    """Génère l'embed pour les classements."""
     embed = discord.Embed(
         title="🏆 Classements de la Meute 🏆", color=discord.Color.gold()
     )
+
+    # Top Groupes
     group_scores = load_data(group_scores_db).get(str(guild.id), {})
     sorted_groups = sorted(group_scores.items(), key=lambda item: item[1], reverse=True)
     group_text = "\n".join(
         [
-            f"**{i + 1}.** {name} ({score} pts)"
+            f"**{i + 1}.** {name[7:]} ({score} pts)"
             for i, (name, score) in enumerate(sorted_groups[:5])
         ]
     )
@@ -808,6 +929,8 @@ async def generate_leaderboard_embed(guild: discord.Guild):
         value=group_text or "Aucun score ce mois-ci.",
         inline=False,
     )
+
+    # Membres les plus actifs (noteurs)
     events_data = load_data(events_db).get(str(guild.id), {})
     all_raters = [
         user_id
@@ -826,19 +949,7 @@ async def generate_leaderboard_embed(guild: discord.Guild):
         value=raters_text or "Personne n'a encore noté d'événement.",
         inline=False,
     )
-    all_events = sorted(
-        [e for e in events_data.values() if e.get("average_rating", 0) > 0],
-        key=lambda e: e["average_rating"],
-        reverse=True,
-    )
-    events_text = "\n".join(
-        [f"**{e['average_rating']}/5** - {e['title']}" for e in all_events[:5]]
-    )
-    embed.add_field(
-        name="Meilleurs Événements Proposés",
-        value=events_text or "Aucun événement noté.",
-        inline=False,
-    )
+
     embed.set_footer(
         text=f"Dernière mise à jour : {datetime.now().strftime('%d/%m/%Y %H:%M')}"
     )
@@ -856,9 +967,9 @@ async def on_ready():
         print(f"Synchronisé {len(synced)} commande(s)")
     except Exception as e:
         print(f"Erreur de synchronisation : {e}")
+
     print("Démarrage des tâches en arrière-plan...")
     check_recommendations.start()
-    update_recommenders_list.start()
     check_group_votes.start()
     weekly_vote_announcement.start()
     announce_winner.start()
@@ -870,9 +981,13 @@ async def on_ready():
 async def on_member_join(member):
     channel = discord.utils.get(member.guild.text_channels, name=WELCOME_CHANNEL_NAME)
     if channel:
+        reco_channel = discord.utils.get(
+            member.guild.text_channels, name=RECOMMENDERS_CHANNEL_NAME
+        )
         embed = discord.Embed(
             title=f"Bienvenue, {member.display_name} !",
-            description="Notre communauté fonctionne sur un système de **cooptation**...",
+            description=f"Ce serveur fonctionne par **cooptation**. Pour participer, tu dois être recommandé par un membre existant.\n\n"
+            f"Tu peux trouver la liste des membres pouvant te recommander dans {reco_channel.mention if reco_channel else '#' + RECOMMENDERS_CHANNEL_NAME}.",
             color=discord.Color.blue(),
         )
         await channel.send(content=member.mention, embed=embed)
