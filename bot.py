@@ -62,7 +62,8 @@ async def log_action(
     log_channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME_ADMIN)
     if log_channel:
         embed = discord.Embed(title=title, description=description, color=color)
-        embed.set_timestamp(datetime.now())
+        # --- CORRECTION ICI ---
+        embed.timestamp = datetime.now()
         try:
             await log_channel.send(embed=embed)
         except discord.Forbidden:
@@ -822,7 +823,7 @@ async def announce_winner():
                 continue
 
             winner_category = winner_info.get("category", "[Autre]")
-            announcement_text = f"🎉 L'événement de la semaine est : **{winner_category} {winner_info['title']}** ! Proposé par le groupe *{winner_info['proposer_group'][7:]}*."
+            announcement_text = f"� L'événement de la semaine est : **{winner_category} {winner_info['title']}** ! Proposé par le groupe *{winner_info['proposer_group'][7:]}*."
             announcement_message = await assemblee_channel.send(announcement_text)
 
             try:
