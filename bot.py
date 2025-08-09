@@ -16,6 +16,7 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # --- Noms des Rôles & Salons ---
+# Ces noms doivent correspondre exactement à ceux de votre serveur Discord.
 ASSEMBLEE_CHANNEL_NAME = "assemblée"
 EVENT_PROPOSALS_CHANNEL_NAME = "propositions-evenements"
 WELCOME_CHANNEL_NAME = "bienvenue-lis-moi"
@@ -23,11 +24,11 @@ RECOMMENDERS_CHANNEL_NAME = "qui-peut-me-recommander"
 LOG_CHANNEL_NAME_ADMIN = "bot-logs"
 PROFILES_CHANNEL_NAME = "profils-des-groupes"
 LEADERBOARD_CHANNEL_NAME = "classements"
-REGISTRE_CHANNEL_NAME = "registre-de-la-meute"  # Ajout pour le journal public
+REGISTRE_CHANNEL_NAME = "registre-de-la-meute"
 
 EVENEMENT_ROLE_NAME = "Membre de la Meute"
 MONTHLY_WINNER_ROLE_NAME = "🏆 Groupe du Mois"
-MAX_GROUP_MEMBERS = 10
+MAX_GROUP_MEMBERS = 10  # Nombre maximum de membres par groupe
 
 
 # --- Gestion de la base de données (JSON) ---
@@ -50,7 +51,7 @@ def save_data(data, file_name):
 recommendations_db = "recommendations.json"
 events_db = "events.json"
 group_scores_db = "group_scores.json"
-weekly_votes_db = "weekly_votes.json"  # Fichier pour stocker les votes de la semaine
+weekly_votes_db = "weekly_votes.json"
 
 
 # --- Journal d'actions (Logging) ---
@@ -73,8 +74,8 @@ async def log_action(
 # --- Configuration du Bot ---
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True  # Nécessaire pour certaines vérifications
-# On passe à un bot sans préfixe de commande, tout se fera par slash commands
+intents.message_content = True
+
 bot = commands.Bot(command_prefix=commands.when_mentioned_or("§"), intents=intents)
 
 
@@ -131,7 +132,6 @@ async def aide(interaction: discord.Interaction):
 async def groupe(interaction: discord.Interaction, nom: str, couleur: str):
     await interaction.response.defer(ephemeral=True)
 
-    # Validation et conversion de la couleur
     try:
         couleur_obj = discord.Colour.from_str(couleur)
     except ValueError:
@@ -150,28 +150,26 @@ async def groupe(interaction: discord.Interaction, nom: str, couleur: str):
         )
         return
 
-    # Création du rôle
     nouveau_role = await guild.create_role(
         name=role_name,
         colour=couleur_obj,
         reason=f"Création du groupe par {interaction.user}",
     )
 
-    # Création de la catégorie et des salons
-    categorie = await guild.create_category(f"Territoire {nom}")
+    # Mise à jour de la création des salons pour correspondre à la nouvelle structure
+    categorie = await guild.create_category(f"🐺 GROUPE {nom.upper()}")
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=False),
         nouveau_role: discord.PermissionOverwrite(
             read_messages=True, send_messages=True, connect=True, speak=True
         ),
-        guild.me: discord.PermissionOverwrite(
-            read_messages=True, send_messages=True
-        ),  # Le bot doit pouvoir voir les salons
+        guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True),
     }
+
     nom_slug = nom.lower().replace(" ", "-")
-    await categorie.create_text_channel(f"discussion-{nom_slug}", overwrites=overwrites)
-    await categorie.create_voice_channel(f"vocal-{nom_slug}", overwrites=overwrites)
-    await categorie.create_text_channel(f"gestion-{nom_slug}", overwrites=overwrites)
+    await categorie.create_text_channel(f"💬-{nom_slug}", overwrites=overwrites)
+    await categorie.create_text_channel(f"🔒-gestion-{nom_slug}", overwrites=overwrites)
+    await categorie.create_voice_channel(f"🔊 Vocal - {nom}", overwrites=overwrites)
 
     await interaction.followup.send(
         f"✅ Le groupe '{nom}' a été créé avec succès !", ephemeral=True
@@ -182,12 +180,48 @@ async def groupe(interaction: discord.Interaction, nom: str, couleur: str):
         f"Le groupe **{nom}** a été créé par {interaction.user.mention}.",
         color=discord.Color.green(),
     )
-    await log_action(
-        guild,
-        "Création de Groupe",
-        f"Le groupe **{nom}** a été créé par {interaction.user.mention}.",
-        color=discord.Color.green(),
+
+
+@bot.tree.command(
+    name="groupes",
+    description="Affiche la liste de tous les groupes qu'il est possible de rejoindre.",
+)
+async def groupes(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+
+    all_group_roles = [role for role in guild.roles if role.name.startswith("groupe ")]
+
+    embed = discord.Embed(
+        title="🐺 Liste des Groupes de la Meute",
+        description="Voici les groupes que tu peux rejoindre. Utilise `/join <nom du groupe>`.",
+        color=discord.Color.purple(),
     )
+
+    if not all_group_roles:
+        embed.description = "Il n'y a aucun groupe à rejoindre pour le moment."
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    joinable_groups_text = ""
+    for role in sorted(all_group_roles, key=lambda r: r.name):
+        member_count = len(role.members)
+        if member_count < MAX_GROUP_MEMBERS:
+            places_left = MAX_GROUP_MEMBERS - member_count
+            joinable_groups_text += f"**{role.name[7:]}** - `{member_count}/{MAX_GROUP_MEMBERS}` membres ({places_left} places restantes)\n"
+
+    if not joinable_groups_text:
+        embed.add_field(
+            name="Groupes disponibles",
+            value="Aucun groupe n'a de place libre pour le moment.",
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Groupes disponibles", value=joinable_groups_text, inline=False
+        )
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(
@@ -205,13 +239,13 @@ async def join(interaction: discord.Interaction, nom_groupe: str):
         )
         return
 
-    if len(role_demande.members) >= 10:
+    if len(role_demande.members) >= MAX_GROUP_MEMBERS:
         await interaction.response.send_message(
-            "❌ Ce groupe est déjà complet (10 membres).", ephemeral=True
+            f"❌ Ce groupe est déjà complet ({MAX_GROUP_MEMBERS} membres).",
+            ephemeral=True,
         )
         return
 
-    # Vérifier si l'utilisateur est déjà dans un groupe
     ancien_role = discord.utils.find(
         lambda r: r.name.startswith("groupe "), member.roles
     )
@@ -239,26 +273,25 @@ async def leave(interaction: discord.Interaction):
         return
 
     await interaction.response.defer(ephemeral=True)
+    nom_groupe_original = role_groupe.name[7:]
     await member.remove_roles(role_groupe, reason="A quitté le groupe")
     await interaction.followup.send(
-        f"✅ Tu as quitté le groupe **{role_groupe.name[7:]}**.", ephemeral=True
+        f"✅ Tu as quitté le groupe **{nom_groupe_original}**.", ephemeral=True
     )
 
-    # Vérifier si le groupe est maintenant vide
-    if len(role_groupe.members) == 0:
+    # Re-fetch the role to get an updated member count
+    role_groupe_updated = guild.get_role(role_groupe.id)
+    if role_groupe_updated and len(role_groupe_updated.members) == 0:
         await log_action(
             guild,
             "Nettoyage de Groupe",
-            f"Le groupe **{role_groupe.name[7:]}** est vide et va être supprimé.",
+            f"Le groupe **{nom_groupe_original}** est vide et va être supprimé.",
             color=discord.Color.orange(),
         )
 
-        # Suppression des canaux et de la catégorie
-        nom_groupe_original = role_groupe.name[7:]
-        nom_groupe_slug = nom_groupe_original.lower().replace(" ", "-")
-
+        # Mise à jour de la recherche de la catégorie
         categorie = discord.utils.get(
-            guild.categories, name=f"Territoire {nom_groupe_original}"
+            guild.categories, name=f"🐺 GROUPE {nom_groupe_original.upper()}"
         )
         if categorie:
             for channel in categorie.channels:
@@ -273,9 +306,8 @@ async def leave(interaction: discord.Interaction):
                     f"Erreur lors de la suppression de la catégorie {categorie.name}: {e}"
                 )
 
-        # Suppression du rôle
         try:
-            await role_groupe.delete(reason="Groupe vide")
+            await role_groupe_updated.delete(reason="Groupe vide")
             await log_action(
                 guild,
                 "Groupe Supprimé",
@@ -283,7 +315,9 @@ async def leave(interaction: discord.Interaction):
                 color=discord.Color.red(),
             )
         except discord.HTTPException as e:
-            print(f"Erreur lors de la suppression du rôle {role_groupe.name}: {e}")
+            print(
+                f"Erreur lors de la suppression du rôle {role_groupe_updated.name}: {e}"
+            )
 
 
 @bot.tree.command(
@@ -340,7 +374,6 @@ async def recommander(interaction: discord.Interaction, membre: discord.Member):
     )
 
 
-# --- Modal pour le profil de groupe ---
 class GroupProfileModal(Modal, title="Mise à jour du profil de groupe"):
     description = TextInput(
         label="Description de votre groupe",
@@ -372,7 +405,6 @@ class GroupProfileModal(Modal, title="Mise à jour du profil de groupe"):
             )
             return
 
-        # Chercher un message existant pour le mettre à jour
         existing_message = None
         async for message in profile_channel.history(limit=100):
             if (
@@ -416,7 +448,6 @@ async def profil(interaction: discord.Interaction):
     await interaction.response.send_modal(GroupProfileModal())
 
 
-# --- Modal pour proposer un événement ---
 class ProposeEventModal(Modal, title="Proposer un nouvel événement"):
     category = TextInput(
         label="Catégorie",
@@ -447,7 +478,7 @@ class ProposeEventModal(Modal, title="Proposer un nouvel événement"):
 
         gestion_slug = group_role.name[7:].lower().replace(" ", "-")
         gestion_channel = discord.utils.get(
-            interaction.guild.text_channels, name=f"gestion-{gestion_slug}"
+            interaction.guild.text_channels, name=f"🔒-gestion-{gestion_slug}"
         )
         if not gestion_channel:
             await interaction.response.send_message(
@@ -592,7 +623,6 @@ async def check_recommendations():
                                     f"🎉 La recommandation pour {new_member.mention} a été validée !"
                                 )
 
-                                # Ajout au registre public
                                 if registre_channel:
                                     await registre_channel.send(
                                         f"🐺 Bienvenue à {new_member.mention}, qui a rejoint la meute sur recommandation de {recommender.mention}."
@@ -613,7 +643,6 @@ async def check_recommendations():
 
 @tasks.loop(hours=1)
 async def check_group_votes():
-    """Vérifie les votes de proposition au sein des groupes."""
     await bot.wait_until_ready()
     for guild in bot.guilds:
         proposals_channel = discord.utils.get(
@@ -623,8 +652,8 @@ async def check_group_votes():
             continue
 
         for channel in guild.text_channels:
-            if channel.name.startswith("gestion-"):
-                group_name_slug = channel.name[len("gestion-") :]
+            if channel.name.startswith("🔒-gestion-"):
+                group_name_slug = channel.name[len("🔒-gestion-") :]
                 group_role = discord.utils.find(
                     lambda r: r.name[7:].lower().replace(" ", "-") == group_name_slug,
                     guild.roles,
@@ -647,7 +676,6 @@ async def check_group_votes():
                             continue
 
                         if yes_reac.count >= majority_approve:
-                            # Proposition acceptée
                             event_title = message.embeds[0].title[
                                 len("Nouvelle proposition : ") :
                             ]
@@ -687,7 +715,6 @@ async def check_group_votes():
                             await message.delete()
 
                         elif no_reac and no_reac.count >= majority_approve:
-                            # Proposition rejetée
                             await channel.send(
                                 f'La proposition "{message.embeds[0].title}" a été rejetée par le groupe.',
                                 delete_after=60,
@@ -697,10 +724,9 @@ async def check_group_votes():
                     print(f"Erreur dans check_group_votes pour {channel.name}: {e}")
 
 
-# --- Système de vote hebdomadaire (corrigé) ---
 class WeeklyVoteView(View):
     def __init__(self, options, vote_id):
-        super().__init__(timeout=172800)  # Timeout de 48h
+        super().__init__(timeout=172800)
         self.vote_id = vote_id
         self.add_item(self.create_select(options))
 
@@ -718,7 +744,6 @@ class WeeklyVoteView(View):
         if self.vote_id not in votes_data:
             votes_data[self.vote_id] = {}
 
-        # Enregistre le vote de l'utilisateur
         votes_data[self.vote_id][str(interaction.user.id)] = self.children[0].values[0]
         save_data(votes_data, weekly_votes_db)
 
@@ -729,8 +754,6 @@ class WeeklyVoteView(View):
 
 @tasks.loop(hours=24)
 async def weekly_vote_announcement():
-    """Annonce le début du vote pour l'événement de la semaine."""
-    # Déclenché le Mercredi à 18h
     now = datetime.now()
     if now.weekday() == 2 and now.hour == 18:
         for guild in bot.guilds:
@@ -761,7 +784,7 @@ async def weekly_vote_announcement():
                     description=f"Note: {event['average_rating']}/5",
                     value=event_id,
                 )
-                for event_id, event in sorted_events[:25]  # Limite de 25 options
+                for event_id, event in sorted_events[:25]
             ]
 
             if not options:
@@ -770,7 +793,6 @@ async def weekly_vote_announcement():
                 )
                 return
 
-            # Utilise l'ID du message comme ID de vote unique
             temp_msg = await assemblee_channel.send("Préparation du vote...")
             vote_id = str(temp_msg.id)
 
@@ -783,10 +805,8 @@ async def weekly_vote_announcement():
 
 @tasks.loop(hours=24)
 async def announce_winner():
-    """Annonce l'événement gagnant de la semaine."""
-    # Déclenché le Vendredi à 15h
     now = datetime.now()
-    if now.weekday() == 4 and now.hour == 15:
+    if now.weekday() == 4 and now.hour == 20:
         for guild in bot.guilds:
             assemblee_channel = discord.utils.get(
                 guild.text_channels, name=ASSEMBLEE_CHANNEL_NAME
@@ -796,12 +816,9 @@ async def announce_winner():
 
             votes_data = load_data(weekly_votes_db)
             if not votes_data:
-                await assemblee_channel.send(
-                    "Aucun vote n'a été enregistré cette semaine."
-                )
+                # Silently return if no votes are active, to avoid spamming the channel
                 return
 
-            # On prend le dernier vote lancé
             latest_vote_id = sorted(votes_data.keys())[-1]
             latest_votes = votes_data[latest_vote_id]
 
@@ -809,7 +826,6 @@ async def announce_winner():
                 await assemblee_channel.send("Personne n'a voté cette semaine !")
                 return
 
-            # Comptage des votes
             vote_counts = Counter(latest_votes.values())
             winner_id, _ = vote_counts.most_common(1)[0]
 
@@ -823,12 +839,10 @@ async def announce_winner():
                 )
                 continue
 
-            # Annonce et mise à jour
             winner_category = winner_info.get("category", "[Autre]")
             announcement_text = f"🎉 L'événement de la semaine est : **{winner_category} {winner_info['title']}** ! Proposé par le groupe *{winner_info['proposer_group'][7:]}*."
             announcement_message = await assemblee_channel.send(announcement_text)
 
-            # Création du fil de discussion
             try:
                 thread_name = f"Feedback sur - {winner_info['title']}"[:100]
                 await announcement_message.create_thread(
@@ -837,7 +851,6 @@ async def announce_winner():
             except Exception as e:
                 print(f"Erreur lors de la création du fil de discussion : {e}")
 
-            # Mise à jour du score du groupe
             group_scores = load_data(group_scores_db)
             if server_id not in group_scores:
                 group_scores[server_id] = {}
@@ -847,18 +860,15 @@ async def announce_winner():
             )
             save_data(group_scores, group_scores_db)
 
-            # Marquer l'événement comme passé
             events_data[server_id][winner_id]["status"] = "past"
             save_data(events_data, events_db)
 
-            # Nettoyer l'ancien vote
             del votes_data[latest_vote_id]
             save_data(votes_data, weekly_votes_db)
 
 
 @tasks.loop(hours=24)
 async def monthly_intercommunity_event():
-    """Gère l'événement mensuel et le rôle du gagnant."""
     now = datetime.now()
     if now.day == 1 and now.hour == 12:
         for guild in bot.guilds:
@@ -866,13 +876,11 @@ async def monthly_intercommunity_event():
             if not group_scores:
                 continue
 
-            # Retirer le rôle au(x) gagnant(s) précédent(s)
             winner_role = discord.utils.get(guild.roles, name=MONTHLY_WINNER_ROLE_NAME)
             if winner_role:
                 for member in winner_role.members:
                     await member.remove_roles(winner_role, reason="Fin du mois")
 
-            # Déterminer le nouveau gagnant
             winning_group_name = max(group_scores, key=group_scores.get)
             score = group_scores[winning_group_name]
             winning_group_role = discord.utils.get(guild.roles, name=winning_group_name)
@@ -888,12 +896,10 @@ async def monthly_intercommunity_event():
                 )
                 await assemblee_channel.send(embed=embed)
 
-            # Attribuer le rôle au nouveau gagnant
             if winning_group_role and winner_role:
                 for member in winning_group_role.members:
                     await member.add_roles(winner_role, reason="Gagnant du mois")
 
-            # Réinitialiser les scores pour le nouveau mois
             group_scores[str(guild.id)] = {}
             save_data(group_scores, group_scores_db)
 
@@ -910,12 +916,10 @@ async def update_leaderboard():
 
 
 async def generate_leaderboard_embed(guild: discord.Guild):
-    """Génère l'embed pour les classements."""
     embed = discord.Embed(
         title="🏆 Classements de la Meute 🏆", color=discord.Color.gold()
     )
 
-    # Top Groupes
     group_scores = load_data(group_scores_db).get(str(guild.id), {})
     sorted_groups = sorted(group_scores.items(), key=lambda item: item[1], reverse=True)
     group_text = "\n".join(
@@ -930,7 +934,6 @@ async def generate_leaderboard_embed(guild: discord.Guild):
         inline=False,
     )
 
-    # Membres les plus actifs (noteurs)
     events_data = load_data(events_db).get(str(guild.id), {})
     all_raters = [
         user_id
