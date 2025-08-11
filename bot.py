@@ -62,7 +62,6 @@ async def log_action(
     log_channel = discord.utils.get(guild.text_channels, name=LOG_CHANNEL_NAME_ADMIN)
     if log_channel:
         embed = discord.Embed(title=title, description=description, color=color)
-        # --- CORRECTION ICI ---
         embed.timestamp = datetime.now()
         try:
             await log_channel.send(embed=embed)
@@ -823,7 +822,7 @@ async def announce_winner():
                 continue
 
             winner_category = winner_info.get("category", "[Autre]")
-            announcement_text = f"� L'événement de la semaine est : **{winner_category} {winner_info['title']}** ! Proposé par le groupe *{winner_info['proposer_group'][7:]}*."
+            announcement_text = f"🎉 L'événement de la semaine est : **{winner_category} {winner_info['title']}** ! Proposé par le groupe *{winner_info['proposer_group'][7:]}*."
             announcement_message = await assemblee_channel.send(announcement_text)
 
             try:
@@ -1120,11 +1119,17 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         yes_reac = discord.utils.get(message.reactions, emoji="✅")
         no_reac = discord.utils.get(message.reactions, emoji="❌")
 
-        if (
-            str(payload.emoji) == "✅"
-            and yes_reac
-            and yes_reac.count >= majority_needed
-        ):
+        # --- CORRECTION ICI : Compter uniquement les votes des membres, pas du bot ---
+        voters_yes = (
+            [user async for user in yes_reac.users() if not user.bot]
+            if yes_reac
+            else []
+        )
+        voters_no = (
+            [user async for user in no_reac.users() if not user.bot] if no_reac else []
+        )
+
+        if str(payload.emoji) == "✅" and len(voters_yes) >= majority_needed:
             event_title = embed.title[len("Nouvelle proposition : ") :]
             category_field = discord.utils.get(embed.fields, name="Catégorie")
             event_category = category_field.value if category_field else "[Autre]"
@@ -1145,12 +1150,15 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
             }
             save_data(events_data, events_db)
 
+            # --- AJOUT ICI : Message de confirmation ---
+            await channel.send(
+                f'✅ La proposition "{event_title}" a été validée par le groupe et est maintenant visible par toute la meute !',
+                delete_after=60,
+            )
             await update_event_proposals_list(guild)
             await message.delete()
 
-        elif (
-            str(payload.emoji) == "❌" and no_reac and no_reac.count >= majority_needed
-        ):
+        elif str(payload.emoji) == "❌" and len(voters_no) >= majority_needed:
             await channel.send(
                 f'La proposition "{embed.title[len("Nouvelle proposition : ") :]}" a été rejetée.',
                 delete_after=60,
