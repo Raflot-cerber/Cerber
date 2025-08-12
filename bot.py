@@ -1128,7 +1128,10 @@ async def update_calendar_task():
             embed = await generate_calendar_embed(guild, now.year, now.month)
             async for message in calendar_channel.history(limit=5):
                 if message.author == bot.user:
-                    await message.delete()
+                    try:
+                        await message.delete()
+                    except discord.NotFound:
+                        pass  # Ignore if message is already deleted
             await calendar_channel.send(embed=embed)
 
 
@@ -1139,7 +1142,7 @@ async def update_calendar_loop():
 
 async def generate_leaderboard_embed(guild: discord.Guild):
     embed = discord.Embed(
-        title="🏆 Classements de la Communauté 🏆", color=discord.Color.gold()
+        title="🏆 Classements de la Communauté �", color=discord.Color.gold()
     )
 
     group_scores = load_data(group_scores_db).get(str(guild.id), {})
