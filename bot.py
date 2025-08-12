@@ -19,7 +19,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 # --- Noms des Rôles & Salons (Thème sobre) ---
 # Ces noms doivent correspondre exactement à ceux de votre serveur Discord.
 ANNONCES_CHANNEL_NAME = "📢-annonces"
-EVENT_PROPOSALS_CHANNEL_NAME = "💡-propositions-evenements"
+EVENT_PROPOSALS_CHANNEL_NAME = "💡-propositions-evenements"  # CORRIGÉ : Emoji au début
 WELCOME_CHANNEL_NAME = "👋-bienvenue"
 RECOMMENDERS_CHANNEL_NAME = "🤝-parrainage"
 LOG_CHANNEL_NAME_ADMIN = "bot-logs"
@@ -138,18 +138,15 @@ async def update_event_proposals_list(guild: discord.Guild):
     await proposals_channel.send(embed=embed)
 
 
-# AMÉLIORATION MAJEURE DE LA FONCTION CALENDRIER
 async def generate_calendar_embed(guild: discord.Guild, year: int, month: int):
     """Génère un embed de calendrier amélioré pour un mois donné."""
     events_data = load_data(events_db).get(str(guild.id), {})
 
-    # Dictionnaires pour stocker les différents types d'événements
     validated_events = {}
     vote_days = {}
     announcement_days = {}
     monthly_event_day = None
 
-    # Parcourir les événements pour les trier
     for event_id, event in events_data.items():
         if event.get("date") and event.get("status") == "validated":
             event_date = datetime.fromisoformat(event["date"])
@@ -161,19 +158,15 @@ async def generate_calendar_embed(guild: discord.Guild, year: int, month: int):
     cal = calendar.Calendar()
     month_days = cal.monthdayscalendar(year, month)
 
-    # Déterminer les jours de vote (Mercredi) et d'annonce (Vendredi)
     for week in month_days:
         for day_index, day in enumerate(week):
             if day == 0:
                 continue
-            # Mercredi (weekday 2)
             if day_index == 2:
                 vote_days[day] = "Début du vote hebdomadaire"
-            # Vendredi (weekday 4)
             if day_index == 4:
                 announcement_days[day] = "Annonce de l'événement de la semaine"
 
-    # Événement mensuel le 1er du mois
     if 1 in [day for week in month_days for day in week]:
         monthly_event_day = 1
 
@@ -201,7 +194,6 @@ async def generate_calendar_embed(guild: discord.Guild, year: int, month: int):
     week_days = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
     header = " | ".join([f"**{day}**" for day in week_days])
 
-    # Création de la grille visuelle du calendrier
     cal_str = ""
     for week in month_days:
         week_str = ""
@@ -209,7 +201,6 @@ async def generate_calendar_embed(guild: discord.Guild, year: int, month: int):
             if day == 0:
                 week_str += " ` ` "
             else:
-                # Utilise différents emojis pour différents types d'événements
                 if day in validated_events:
                     week_str += " `🎉` "
                 elif day in vote_days:
@@ -222,7 +213,6 @@ async def generate_calendar_embed(guild: discord.Guild, year: int, month: int):
 
     embed.add_field(name=header, value=cal_str, inline=False)
 
-    # Liste détaillée des événements validés
     validated_events_str = ""
     for day in sorted(validated_events.keys()):
         validated_events_str += (
@@ -234,7 +224,6 @@ async def generate_calendar_embed(guild: discord.Guild, year: int, month: int):
         name="🎉 Événements des Groupes", value=validated_events_str, inline=False
     )
 
-    # Liste des événements récurrents (votes, annonces)
     recurring_events_str = ""
     if monthly_event_day:
         recurring_events_str += f"**01/{month:02d}** : 🏆 Annonce du Groupe du Mois et lancement de leur événement spécial.\n"
@@ -413,18 +402,19 @@ async def groupes(interaction: discord.Interaction):
 )
 @app_commands.describe(nom_groupe="Le nom exact du groupe que tu veux rejoindre.")
 async def rejoindre(interaction: discord.Interaction, nom_groupe: str):
+    await interaction.response.defer(ephemeral=True)
     member = interaction.user
     guild = interaction.guild
     role_demande = discord.utils.get(guild.roles, name=f"groupe {nom_groupe}")
 
     if not role_demande:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"❌ Le groupe '{nom_groupe}' n'existe pas.", ephemeral=True
         )
         return
 
     if len(role_demande.members) >= MAX_GROUP_MEMBERS:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"❌ Ce groupe est déjà complet ({MAX_GROUP_MEMBERS} membres).",
             ephemeral=True,
         )
@@ -437,13 +427,14 @@ async def rejoindre(interaction: discord.Interaction, nom_groupe: str):
         await member.remove_roles(ancien_role, reason="Changement de groupe")
 
     await member.add_roles(role_demande, reason=f"A rejoint le groupe {nom_groupe}")
-    await interaction.response.send_message(
+    await interaction.followup.send(
         f"✅ Tu as bien rejoint le groupe **{nom_groupe}** !", ephemeral=True
     )
 
 
 @bot.tree.command(name="quitter", description="Quitte votre groupe actuel.")
 async def quitter(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
     member = interaction.user
     guild = interaction.guild
     role_groupe = discord.utils.find(
@@ -451,12 +442,11 @@ async def quitter(interaction: discord.Interaction):
     )
 
     if not role_groupe:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "❌ Tu ne fais partie d'aucun groupe.", ephemeral=True
         )
         return
 
-    await interaction.response.defer(ephemeral=True)
     nom_groupe_original = role_groupe.name[7:]
     await member.remove_roles(role_groupe, reason="A quitté le groupe")
     await interaction.followup.send(
@@ -502,6 +492,7 @@ async def quitter(interaction: discord.Interaction):
             )
 
 
+# CORRIGÉ : Utilisation de defer() et followup() pour éviter les timeouts
 @bot.tree.command(
     name="recommander",
     description="Lance un vote pour faire entrer un nouveau membre.",
@@ -509,13 +500,15 @@ async def quitter(interaction: discord.Interaction):
 @app_commands.describe(membre="Le membre que tu souhaites recommander.")
 @app_commands.checks.has_role(MEMBER_ROLE_NAME)
 async def recommander(interaction: discord.Interaction, membre: discord.Member):
+    await interaction.response.defer(ephemeral=True)
+
     data = load_data(recommendations_db)
     server_id = str(interaction.guild.id)
     if server_id not in data:
         data[server_id] = {}
 
     if str(membre.id) in data[server_id]:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Ce membre est déjà en cours de validation.", ephemeral=True
         )
         return
@@ -530,7 +523,7 @@ async def recommander(interaction: discord.Interaction, membre: discord.Member):
         interaction.guild.text_channels, name=ANNONCES_CHANNEL_NAME
     )
     if not assemblee_channel:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Le salon `{ANNONCES_CHANNEL_NAME}` est introuvable.", ephemeral=True
         )
         return
@@ -544,7 +537,7 @@ async def recommander(interaction: discord.Interaction, membre: discord.Member):
     msg = await assemblee_channel.send(embed=embed)
     await msg.add_reaction("✅")
 
-    await interaction.response.send_message(
+    await interaction.followup.send(
         f"Votre recommandation pour {membre.mention} a été soumise au vote dans {assemblee_channel.mention}.",
         ephemeral=True,
     )
@@ -564,18 +557,19 @@ async def recommander(interaction: discord.Interaction, membre: discord.Member):
 async def exclure(
     interaction: discord.Interaction, membre: discord.Member, raison: str
 ):
+    await interaction.response.defer(ephemeral=True)
     if membre == interaction.user:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "❌ Vous ne pouvez pas vous exclure vous-même.", ephemeral=True
         )
         return
     if membre.bot:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "❌ Vous ne pouvez pas exclure un bot.", ephemeral=True
         )
         return
     if membre.guild_permissions.administrator:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "❌ Vous ne pouvez pas exclure un administrateur.", ephemeral=True
         )
         return
@@ -584,7 +578,7 @@ async def exclure(
         interaction.guild.text_channels, name=ANNONCES_CHANNEL_NAME
     )
     if not assemblee_channel:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"❌ Le salon `{ANNONCES_CHANNEL_NAME}` est introuvable.", ephemeral=True
         )
         return
@@ -600,7 +594,7 @@ async def exclure(
     msg = await assemblee_channel.send(embed=embed)
     await msg.add_reaction("✅")
 
-    await interaction.response.send_message(
+    await interaction.followup.send(
         f"Le vote d'exclusion pour {membre.mention} a été lancé dans {assemblee_channel.mention}.",
         ephemeral=True,
     )
@@ -712,11 +706,12 @@ class ProposeEventModal(Modal, title="Proposer un nouvel événement"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         group_role = discord.utils.find(
             lambda r: r.name.startswith("groupe "), interaction.user.roles
         )
         if not group_role:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ Vous devez faire partie d'un groupe.", ephemeral=True
             )
             return
@@ -724,7 +719,7 @@ class ProposeEventModal(Modal, title="Proposer un nouvel événement"):
         try:
             datetime.strptime(self.event_date.value, "%d/%m/%Y")
         except ValueError:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ Format de date invalide. Veuillez utiliser JJ/MM/AAAA.",
                 ephemeral=True,
             )
@@ -735,7 +730,7 @@ class ProposeEventModal(Modal, title="Proposer un nouvel événement"):
             interaction.guild.text_channels, name=f"🔒-gestion-{gestion_slug}"
         )
         if not gestion_channel:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ Salon de gestion introuvable pour votre groupe.", ephemeral=True
             )
             return
@@ -759,7 +754,7 @@ class ProposeEventModal(Modal, title="Proposer un nouvel événement"):
         await msg.add_reaction("✅")
         await msg.add_reaction("❌")
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Proposition envoyée dans {gestion_channel.mention} !", ephemeral=True
         )
         await log_action(
