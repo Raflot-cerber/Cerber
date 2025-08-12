@@ -19,7 +19,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 # --- Noms des Rôles & Salons (Thème sobre) ---
 # Ces noms doivent correspondre exactement à ceux de votre serveur Discord.
 ANNONCES_CHANNEL_NAME = "📢-annonces"
-EVENT_PROPOSALS_CHANNEL_NAME = "💡-propositions-evenements"  # CORRIGÉ : Emoji au début
+EVENT_PROPOSALS_CHANNEL_NAME = "💡-propositions-evenements"
 WELCOME_CHANNEL_NAME = "👋-bienvenue"
 RECOMMENDERS_CHANNEL_NAME = "🤝-parrainage"
 LOG_CHANNEL_NAME_ADMIN = "bot-logs"
@@ -492,7 +492,6 @@ async def quitter(interaction: discord.Interaction):
             )
 
 
-# CORRIGÉ : Utilisation de defer() et followup() pour éviter les timeouts
 @bot.tree.command(
     name="recommander",
     description="Lance un vote pour faire entrer un nouveau membre.",
@@ -528,14 +527,28 @@ async def recommander(interaction: discord.Interaction, membre: discord.Member):
         )
         return
 
-    embed = discord.Embed(
-        title="Nouvelle recommandation de membre",
-        description=f"{interaction.user.mention} a recommandé {membre.mention} pour rejoindre la communauté.",
-        color=discord.Color.blue(),
-    )
-    embed.set_footer(text=f"ID du membre: {membre.id}")
-    msg = await assemblee_channel.send(embed=embed)
-    await msg.add_reaction("✅")
+    try:
+        embed = discord.Embed(
+            title="Nouvelle recommandation de membre",
+            description=f"{interaction.user.mention} a recommandé {membre.mention} pour rejoindre la communauté.",
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(text=f"ID du membre: {membre.id}")
+        msg = await assemblee_channel.send(embed=embed)
+        await msg.add_reaction("✅")
+
+    except discord.Forbidden:
+        await interaction.followup.send(
+            f"❌ **Erreur de permission** : Je ne peux pas envoyer de message ou ajouter de réaction dans {assemblee_channel.mention}. Veuillez vérifier mes permissions.",
+            ephemeral=True,
+        )
+        return
+    except Exception as e:
+        await interaction.followup.send(
+            f"Une erreur inattendue est survenue: `{e}`", ephemeral=True
+        )
+        print(f"Erreur dans /recommander: {e}")
+        return
 
     await interaction.followup.send(
         f"Votre recommandation pour {membre.mention} a été soumise au vote dans {assemblee_channel.mention}.",
@@ -583,16 +596,30 @@ async def exclure(
         )
         return
 
-    embed = discord.Embed(
-        title="Vote d'exclusion",
-        description=f"{interaction.user.mention} a lancé un vote pour exclure {membre.mention}.",
-        color=discord.Color.red(),
-    )
-    embed.add_field(name="Raison", value=raison, inline=False)
-    embed.set_footer(text=f"ID du membre à exclure: {membre.id}")
+    try:
+        embed = discord.Embed(
+            title="Vote d'exclusion",
+            description=f"{interaction.user.mention} a lancé un vote pour exclure {membre.mention}.",
+            color=discord.Color.red(),
+        )
+        embed.add_field(name="Raison", value=raison, inline=False)
+        embed.set_footer(text=f"ID du membre à exclure: {membre.id}")
 
-    msg = await assemblee_channel.send(embed=embed)
-    await msg.add_reaction("✅")
+        msg = await assemblee_channel.send(embed=embed)
+        await msg.add_reaction("✅")
+
+    except discord.Forbidden:
+        await interaction.followup.send(
+            f"❌ **Erreur de permission** : Je ne peux pas envoyer de message ou ajouter de réaction dans {assemblee_channel.mention}. Veuillez vérifier mes permissions.",
+            ephemeral=True,
+        )
+        return
+    except Exception as e:
+        await interaction.followup.send(
+            f"Une erreur inattendue est survenue: `{e}`", ephemeral=True
+        )
+        print(f"Erreur dans /exclure: {e}")
+        return
 
     await interaction.followup.send(
         f"Le vote d'exclusion pour {membre.mention} a été lancé dans {assemblee_channel.mention}.",
